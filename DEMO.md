@@ -23,8 +23,13 @@ $key = az functionapp keys list `
   --query "functionKeys.default" `
   -o tsv
 
+if (-not $key) {
+  throw "No se pudo recuperar la function key"
+}
+
 # Construye la URL de la Function
-$Url = "https://fa-block-agent-jykza1.azurewebsites.net/api/budget-alert?code=$key"
+$Url = "https://fa-block-agent-jykza1.azurewebsites.net/api/budget-alert?code=${key}"
+$Url
 
 # Recurso Foundry
 $Rid = "/subscriptions/72dc9a1e-135b-49cb-86e6-80630340cade/resourceGroups/rg-agent-verse/providers/Microsoft.CognitiveServices/accounts/agent-verse-resource"
@@ -32,13 +37,37 @@ $Rid = "/subscriptions/72dc9a1e-135b-49cb-86e6-80630340cade/resourceGroups/rg-ag
 # Identidad del agente de demo
 $AgentId = "39f26b00-03d9-4e0c-bd70-cdfa22f21df9"
 
+if (-not $AgentId) {
+  throw "AgentId vacío"
+}
+
+$GraphSpUrl = "https://graph.microsoft.com/v1.0/servicePrincipals/${AgentId}?`$select=displayName,accountEnabled"
+$GraphAccountUrl = "https://graph.microsoft.com/v1.0/servicePrincipals/${AgentId}?`$select=accountEnabled"
+$GraphPatchUrl = "https://graph.microsoft.com/v1.0/servicePrincipals/${AgentId}"
+$GraphSpUrl
+
 "Listo. URL preparada."
 ```
+
+La salida de `$Url` debe incluir un valor después de `?code=`. Si ves `?code=` vacío, no sigas con la demo: vuelve a ejecutar el bloque anterior en la misma ventana de PowerShell.
+
+La salida de `$GraphSpUrl` debe incluir el GUID del agente después de `/servicePrincipals/`. Si ves `/servicePrincipals/?`, no sigas con la parte de Graph: vuelve a ejecutar el bloque anterior en la misma ventana de PowerShell.
 
 Si `$key` aparece vacío o recibes errores de autenticación:
 
 ```powershell
 az account show
+```
+
+Si necesitas recomponer la URL manualmente:
+
+```powershell
+if (-not $key) {
+  throw "No se pudo recuperar la function key"
+}
+
+$Url = "https://fa-block-agent-jykza1.azurewebsites.net/api/budget-alert?code=${key}"
+$Url
 ```
 
 ---
@@ -222,7 +251,7 @@ $body = '{"agentId":"<spObjectId>","mechanism":"graph","action":"block"}'
 ```powershell
 az rest `
   --method GET `
-  --uri "https://graph.microsoft.com/v1.0/servicePrincipals/$AgentId?`$select=displayName,accountEnabled"
+  --uri $GraphSpUrl
 ```
 
 ---
@@ -240,7 +269,7 @@ az rest `
 ```powershell
 az rest `
   --method PATCH `
-  --uri "https://graph.microsoft.com/v1.0/servicePrincipals/$AgentId" `
+  --uri $GraphPatchUrl `
   --headers "Content-Type=application/json" `
   --body "@$env:TEMP\b.json"
 ```
@@ -252,7 +281,7 @@ az rest `
 ```powershell
 az rest `
   --method GET `
-  --uri "https://graph.microsoft.com/v1.0/servicePrincipals/$AgentId?`$select=accountEnabled"
+  --uri $GraphAccountUrl
 ```
 
 ### Resultado esperado
@@ -278,7 +307,7 @@ az rest `
 ```powershell
 az rest `
   --method PATCH `
-  --uri "https://graph.microsoft.com/v1.0/servicePrincipals/$AgentId" `
+  --uri $GraphPatchUrl `
   --headers "Content-Type=application/json" `
   --body "@$env:TEMP\b.json"
 ```
@@ -380,7 +409,7 @@ Verificar que la identidad está habilitada:
 ```powershell
 az rest `
   --method GET `
-  --uri "https://graph.microsoft.com/v1.0/servicePrincipals/$AgentId?`$select=accountEnabled"
+  --uri $GraphAccountUrl
 ```
 
 ### Resultado esperado
