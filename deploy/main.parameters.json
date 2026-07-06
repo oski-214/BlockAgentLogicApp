@@ -9,7 +9,7 @@
     "foundryAccountName": { "value": "agent-verse-resource" },
     "foundryProjectEndpoint": { "value": "https://agent-verse-resource.services.ai.azure.com/api/projects/agent-verse-project" },
     "foundryApiVersion": { "value": "v1" },
-    "agentTargetMap": { "value": "{\"39f26b00-03d9-4e0c-bd70-cdfa22f21df9\":{\"foundry_agent_id\":\"AgentVerseIntakeAgent\",\"service_principal_id\":\"39f26b00-03d9-4e0c-bd70-cdfa22f21df9\"}}" },
+    "agentTargetMap": { "value": "{\"39f26b00-03d9-4e0c-bd70-cdfa22f21df9\":{\"foundry_agent_id\":\"AgentVerseIntakeAgent\",\"service_principal_id\":\"39f26b00-03d9-4e0c-bd70-cdfa22f21df9\"},\"f55c4a61-23bf-46fd-b3d9-694d78a9138c\":{\"foundry_agent_id\":\"SimplePromptAgent\",\"service_principal_id\":\"f55c4a61-23bf-46fd-b3d9-694d78a9138c\"}}" },
     "defaultBlockMechanism": { "value": "foundry" }
   }
 }
