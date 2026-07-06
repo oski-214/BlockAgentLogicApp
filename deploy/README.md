@@ -32,7 +32,7 @@ que hacer `az login` y ejecutar un script.
 - **D2/D3 (Mecanismo C – etiqueta ARM):** bloqueo puso `MS-AOAI-Feature-Assistants=Disabled` (previo `Enabled`) y el desbloqueo lo revirtió a `Enabled`. Reversible y no destructivo confirmado. ✔
 - **Mecanismo B (Graph) sobre un service principal NORMAL:** la identidad administrada deshabilitó (`accountEnabled=false`) y rehabilitó un SP de prueba desechable. **Funciona end-to-end** con `Application.ReadWrite.All`. ✔
 - **Mecanismo B sobre la identidad de agente de Foundry (`39f26b00…`):** ❌ `403 Authorization_RequestDenied` desde la identidad administrada, **incluso con `Application.ReadWrite.All` + Cloud Application Administrator**. La misma operación **sí funciona con un token de Global Administrator**. Ver la nota de identidades de agente.
-- **Mecanismo A (Foundry):** el agente publicado usa el **Foundry Agent Service (agentes persistentes)**, cuyo modelo de actualización difiere del de la implementación actual (ver nota).
+- **Mecanismo A (Foundry Agent Service):** ✅ **adaptado y probado en vivo.** La Function deshabilita/rehabilita el agente con las acciones nativas `POST /agents/{id}:disable` / `:enable` (`api-version=v1`), dejando `state=disabled`/`enabled`. Lo ejecuta la **identidad administrada** (rol `Azure AI Developer`), **sin Global Admin**. Reversible y enforced por el servicio. Fallback automático a flag `metadata.blocked` (nueva versión preservando `definition`) si el entorno no expone las acciones de estado.
 
 > **🔑 Nota sobre identidades de agente de Foundry (preview):** los agentes que
 > publicas en `agent-verse-project` (p. ej. `AgentVerseIntakeAgent`) se respaldan en
@@ -46,13 +46,18 @@ que hacer `az login` y ejecutar un script.
 > la identidad administrada con `Application.ReadWrite.All` es suficiente (probado).
 
 > **🔑 Nota sobre el Mecanismo A y el Agent Service:** el proyecto usa la API nueva de
-> agentes (`/agents`, `api-version=v1`), donde un agente tiene `state` y versiones con
-> `definition`; no admite el simple `POST {metadata:{blocked:true}}` de la API estilo
-> *assistants* (devuelve `required: definition`). La implementación actual de `foundry.py`
-> encaja con la API *assistants*; para los agentes persistentes de Foundry el bloqueo
-> recomendado es **deshabilitar la identidad del agente** (Mecanismo B, que para preview
-> requiere GA). Adaptar A a la API nueva (publicar versión con `metadata`) queda como
-> mejora pendiente.
+> agentes (`/agents`, `api-version=v1`), donde un agente tiene un campo nativo `state`
+> (`enabled`/`disabled`) y versiones con `definition`. **No** admite el simple
+> `POST {metadata:{blocked:true}}` de la API estilo *assistants* (devuelve
+> `required: definition`). `foundry.py` se ha **reescrito** para esta API moderna:
+> el bloqueo primario usa las **acciones de estado nativas**
+> `POST /agents/{id}:disable` / `:enable`, que la **identidad administrada ejecuta sin
+> Global Admin** (a diferencia del Mecanismo B sobre la `agentIdentity` preview) y que
+> el servicio **enforcea** de verdad. Como respaldo, si esas acciones no existen
+> (`404`/`405`), publica una nueva versión con `metadata.blocked=true` **preservando la
+> `definition`** existente (flag advisory, a aplicar en gateway/cliente). Para agentes
+> de Foundry, el Mecanismo A es ahora el bloqueo autónomo recomendado; el Mecanismo B
+> queda como alternativa a nivel de identidad (requiere GA para estas identidades).
 
 > **⚠️ Nota de política del tenant (importante):** tu tenant **prohíbe la
 > autenticación por clave compartida en Storage** y **deshabilita el basic auth de

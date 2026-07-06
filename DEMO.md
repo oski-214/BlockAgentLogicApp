@@ -527,6 +527,80 @@ az resource show `
 
 ---
 
+# Escenario 7 — Bloqueo nativo del agente de Foundry (mecanismo A) ⭐ el más fuerte y autónomo
+
+**Qué demuestras:** el bloqueo real de un agente de Foundry usando su **estado nativo** (`state=disabled`), ejecutado por la **identidad administrada de la Function sin Global Admin**. Es el equivalente más fiel al botón *"Block agent"*: el propio servicio deja de servir el agente.
+
+## 7.1 Estado ANTES
+
+```powershell
+$tok = az account get-access-token `
+  --scope "https://ai.azure.com/.default" `
+  --query accessToken -o tsv
+
+$FoundryEp = "https://agent-verse-resource.services.ai.azure.com/api/projects/agent-verse-project"
+
+Invoke-RestMethod `
+  -Uri "$FoundryEp/agents/SimplePromptAgent?api-version=v1" `
+  -Headers @{ Authorization = "Bearer $tok" } |
+  Select-Object id, state
+```
+
+### Resultado esperado
+
+```text
+id                state
+--                -----
+SimplePromptAgent enabled
+```
+
+## 7.2 BLOQUEAR (mecanismo A vía la Function)
+
+```powershell
+$body = '{"agentId":"f55c4a61-23bf-46fd-b3d9-694d78a9138c","mechanism":"foundry","action":"block"}'
+
+(
+  Invoke-RestMethod `
+    -Uri $Url `
+    -Method Post `
+    -ContentType "application/json" `
+    -Body $body
+).results
+```
+
+### Resultado esperado
+
+`success = true` y `detail` indica `Native state action :disable ... -> state=disabled (was enabled)`.
+
+Comprobar el estado nativo del agente:
+
+```powershell
+Invoke-RestMethod `
+  -Uri "$FoundryEp/agents/SimplePromptAgent?api-version=v1" `
+  -Headers @{ Authorization = "Bearer $tok" } |
+  Select-Object id, state
+# state = disabled
+```
+
+## 7.3 DESBLOQUEAR (revertir)
+
+```powershell
+$body = '{"agentId":"f55c4a61-23bf-46fd-b3d9-694d78a9138c","mechanism":"foundry","action":"unblock"}'
+
+(
+  Invoke-RestMethod `
+    -Uri $Url `
+    -Method Post `
+    -ContentType "application/json" `
+    -Body $body
+).results
+# state vuelve a enabled
+```
+
+> **Mensaje para el cliente:** este es el bloqueo más limpio para agentes de Foundry: lo aplica la Function **por sí sola** (sin Global Admin), lo **enforcea el servicio** (no es un flag) y es **totalmente reversible**. El trigger real del Escenario 6 puede apuntarse a este mecanismo cambiando `DEFAULT_BLOCK_MECHANISM=foundry`.
+
+---
+
 # Resumen
 
 | Escenario | Qué demuestra |
@@ -538,16 +612,28 @@ az resource show `
 | Errores | Robustez y validación |
 | Offline | Lógica sin dependencia de Azure |
 | **Trigger real E2E** | **Saturar en Foundry → alerta → bloqueo automático** |
+| **Estado nativo Foundry (A)** | **Deshabilitar el agente de Foundry, autónomo y enforced** |
 
 ---
 
-# Nota sobre el mecanismo A (Foundry REST)
+# Nota sobre el mecanismo A (Foundry Agent Service)
 
-Los agentes de `agent-verse-project` usan Foundry Agent Service y no la API clásica basada en Assistants.
+Los agentes de `agent-verse-project` usan el **Foundry Agent Service** (agentes persistentes en `/agents` con `api-version=v1`), no la API clásica basada en Assistants. Cada agente tiene un campo nativo `state` (`enabled` / `disabled`).
 
-Actualmente el bloqueo efectivo de estos agentes se consigue mediante el **mecanismo B (identidad)**.
+El mecanismo A se ha **adaptado a esta API moderna** y ahora funciona de verdad: usa las **acciones de estado nativas** del servicio:
 
-La adaptación del mecanismo A a la API moderna de Foundry Agents queda como mejora futura y no bloquea la demo.
+```text
+POST /agents/{id}:disable?api-version=v1   ->  state = "disabled"
+POST /agents/{id}:enable?api-version=v1    ->  state = "enabled"
+```
+
+Ventajas frente al mecanismo B para agentes de Foundry:
+
+- **Es autónomo:** lo ejecuta la propia identidad administrada de la Function (rol `Azure AI Developer`); **no** requiere Global Administrator (el mecanismo B sobre la `agentIdentity` preview sí lo requiere).
+- **Es enforced por el servicio:** `state=disabled` es un estado de primera clase del agente, no un simple flag de metadatos.
+- **Es reversible y no destructivo:** `:enable` restaura el estado y no se borra nada.
+
+Si el entorno apuntara a una API antigua sin estas acciones (`404`/`405`), la Function cae automáticamente a un flag reversible `metadata.blocked=true` publicando una nueva versión que **preserva la `definition`** existente (la API moderna rechaza actualizaciones solo-de-metadatos con `400 required: definition`). Ese flag es advisory y lo debe aplicar un gateway (APIM) o el cliente.
 
 ---
 

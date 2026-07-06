@@ -45,8 +45,9 @@ SAMPLES = Path(__file__).resolve().parent.parent / "samples"
 
 
 class FakeResponse:
-    def __init__(self, payload):
+    def __init__(self, payload, status_code=200):
         self._payload = payload
+        self.status_code = status_code
 
     def json(self):
         return self._payload
@@ -56,18 +57,37 @@ class FakeResponse:
 
 
 class FakeAzure:
-    """In-memory simulation of the three target planes."""
+    """In-memory simulation of the three target planes.
+
+    Foundry is modelled on the **modern Agent Service API**: agents have a native
+    ``state`` (enabled/disabled) toggled by the ``:disable`` / ``:enable`` action
+    endpoints, and versions carry a full ``definition``.
+    """
 
     def __init__(self):
+        self.agent_state = {"asst_demo123": "enabled"}
         self.agent_metadata = {"asst_demo123": {}}
+        self.agent_definition = {"asst_demo123": {"kind": "prompt", "model": "gpt-4.1-mini"}}
         self.sp_enabled = {"11111111-1111-1111-1111-111111111111": True}
         self.resource_tags = {}
+
+    def _agent_body(self, agent_id):
+        return {
+            "id": agent_id,
+            "state": self.agent_state.get(agent_id, "enabled"),
+            "versions": {
+                "latest": {
+                    "definition": dict(self.agent_definition.get(agent_id, {})),
+                    "metadata": dict(self.agent_metadata.get(agent_id, {})),
+                }
+            },
+        }
 
     # --- generic dispatch used by all three fake `requests` shims ---
     def get(self, url, **kwargs):
         if "/agents/" in url:
             agent_id = url.rsplit("/agents/", 1)[1]
-            return FakeResponse({"id": agent_id, "metadata": dict(self.agent_metadata.get(agent_id, {}))})
+            return FakeResponse(self._agent_body(agent_id))
         if "/servicePrincipals/" in url:
             sp_id = url.rsplit("/servicePrincipals/", 1)[1]
             return FakeResponse({"id": sp_id, "accountEnabled": self.sp_enabled.get(sp_id, True)})
@@ -76,10 +96,16 @@ class FakeAzure:
         raise AssertionError(f"unexpected GET {url}")
 
     def post(self, url, **kwargs):
-        # Foundry metadata update
-        agent_id = url.rsplit("/agents/", 1)[1]
+        tail = url.rsplit("/agents/", 1)[1]
+        # Native state action: /agents/{id}:disable | :enable
+        if tail.endswith(":disable") or tail.endswith(":enable"):
+            agent_id, verb = tail.rsplit(":", 1)
+            self.agent_state[agent_id] = "disabled" if verb == "disable" else "enabled"
+            return FakeResponse(self._agent_body(agent_id))
+        # Fallback path: publish a new version (definition + metadata)
+        agent_id = tail
         self.agent_metadata[agent_id] = dict(kwargs["json"]["metadata"])
-        return FakeResponse({"id": agent_id, "metadata": self.agent_metadata[agent_id]})
+        return FakeResponse(self._agent_body(agent_id))
 
     def patch(self, url, **kwargs):
         if "/servicePrincipals/" in url:
@@ -120,7 +146,7 @@ class BlockAgentHarness(unittest.TestCase):
         self.assertEqual(set(block_summary["mechanisms"]), {"foundry", "graph", "tag"})
 
         # State reflects a block
-        self.assertEqual(self.azure.agent_metadata["asst_demo123"]["blocked"], "true")
+        self.assertEqual(self.azure.agent_state["asst_demo123"], "disabled")
         self.assertFalse(self.azure.sp_enabled["11111111-1111-1111-1111-111111111111"])
         self.assertEqual(self.azure.resource_tags["MS-AOAI-Feature-Assistants"], "Disabled")
 
@@ -130,7 +156,7 @@ class BlockAgentHarness(unittest.TestCase):
         # Now unblock and confirm prior state is restored
         unblock_summary = dispatch(parse_budget_alert(self._load("simplified_unblock.json")), self.config)
         self.assertTrue(unblock_summary["allSucceeded"], unblock_summary)
-        self.assertEqual(self.azure.agent_metadata["asst_demo123"]["blocked"], "false")
+        self.assertEqual(self.azure.agent_state["asst_demo123"], "enabled")
         self.assertTrue(self.azure.sp_enabled["11111111-1111-1111-1111-111111111111"])
         self.assertEqual(self.azure.resource_tags["MS-AOAI-Feature-Assistants"], "Enabled")
 
