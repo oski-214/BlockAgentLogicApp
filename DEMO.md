@@ -370,6 +370,163 @@ OK
 
 ---
 
+# Escenario 6 — Trigger REAL de extremo a extremo (saturar el agente → bloqueo automático)
+
+Este es **el escenario que convence**: el flujo completo **sin llamar a la Function a mano**. Saturas el agente desde el **portal de Foundry** y, a los pocos minutos, el agente queda bloqueado **solo**, igual que en producción cuando se dispara el presupuesto.
+
+## Qué está desplegado (ya montado, no hay que crear nada)
+
+| Elemento | Nombre | Qué hace |
+|----------|--------|----------|
+| Grupo de acciones | `ag-block-agent` | Webhook que llama a la Function cuando salta una alerta (esquema común activado) |
+| Alerta de métrica | `budget-AgentVerseIntakeAgent` | Salta cuando `TotalTokens > 1000` en 1 min sobre `agent-verse-resource` |
+| Presupuesto | `budget-AgentVerseIntakeAgent` | Presupuesto de coste (1 €, aviso al 80 %) → mismo grupo de acciones |
+
+La Function lee el nombre de la regla de alerta (`budget-<agente>`) del payload y resuelve el agente (`AgentVerseIntakeAgent`). La alerta real **no** trae mecanismo, así que la Function usa el mecanismo por defecto (`DEFAULT_BLOCK_MECHANISM=tag`) y bloquea de forma autónoma y visible en el portal.
+
+## El flujo
+
+```text
+Portal de Foundry (saturas el agente con un prompt grande)
+        │  se disparan miles de TotalTokens
+        ▼
+Alerta de métrica  budget-AgentVerseIntakeAgent  (TotalTokens > 1000, ventana 1 min)
+        │  monitorCondition = Fired
+        ▼
+Grupo de acciones  ag-block-agent  (webhook, esquema común)
+        │  POST del payload de alerta
+        ▼
+Azure Function  →  mecanismo por defecto (tag)  →  MS-AOAI-Feature-Assistants = Disabled
+        │
+        ▼
+Agente bloqueado automáticamente (visible en el portal de Azure)
+```
+
+---
+
+## 6.1 Estado ANTES
+
+```powershell
+az resource show `
+  --ids $Rid `
+  --query "tags" `
+  -o json
+```
+
+### Resultado esperado
+
+```json
+{
+  "MS-AOAI-Feature-Assistants": "Enabled"
+}
+```
+
+---
+
+## 6.2 Saturar el agente desde el portal de Foundry
+
+1. Abre el **portal de Azure AI Foundry** → proyecto `agent-verse-project` → agente **`AgentVerseIntakeAgent`** → **Playground / Chat**.
+2. Pega el siguiente **prompt de saturación** y envíalo (genera miles de tokens, muy por encima del umbral de 1000 en la ventana de 1 min):
+
+```text
+Escribe un ensayo técnico de al menos 2000 palabras que explique en profundidad,
+paso a paso y con ejemplos, la arquitectura completa de un sistema de bloqueo
+automático de agentes de IA por presupuesto en Azure: incluye Azure Functions,
+Azure Monitor, grupos de acciones, Cost Management, Microsoft Graph y ARM.
+Desarrolla cada sección con el máximo detalle posible, añade ventajas,
+inconvenientes, alternativas y un resumen final extenso. No omitas nada.
+```
+
+Si con una vez no basta, **envíalo 2–3 veces seguidas** para acumular tokens dentro de la misma ventana de 1 minuto.
+
+---
+
+## 6.3 Esperar a que salte la alerta (~1–5 min)
+
+Azure Monitor evalúa la métrica cada minuto. En cuanto `TotalTokens` supera 1000, la alerta pasa a **Fired**, llama al grupo de acciones y este a la Function.
+
+Seguir el estado de la alerta:
+
+```powershell
+az monitor metrics alert show `
+  --name budget-AgentVerseIntakeAgent `
+  --resource-group rg-block-agent `
+  --query "enabled" `
+  -o json
+```
+
+En el portal: **Monitor → Alertas** → verás una alerta `Fired` para `budget-AgentVerseIntakeAgent`.
+
+---
+
+## 6.4 Comprobar que el agente se bloqueó SOLO
+
+```powershell
+az resource show `
+  --ids $Rid `
+  --query "tags" `
+  -o json
+```
+
+### Resultado esperado
+
+```json
+{
+  "MS-AOAI-Feature-Assistants": "Disabled"
+}
+```
+
+Comprobar que la Function se ejecutó (traza en Application Insights):
+
+```powershell
+az monitor app-insights query `
+  --app fa-block-agent-jykza1 `
+  --resource-group rg-block-agent `
+  --analytics-query "requests | where timestamp > ago(15m) | where name contains 'budget-alert' | project timestamp, resultCode | order by timestamp desc" `
+  -o table
+```
+
+También en el portal: **Function App → Functions → budget-alert → Invocations**.
+
+> **Mensaje para el cliente:** nadie ha tocado nada tras enviar el prompt. El agente ha quedado bloqueado por sí solo porque su consumo disparó la alerta. En producción ese mismo mecanismo se ata al **presupuesto de coste** real del agente.
+
+---
+
+## 6.5 Desbloquear (revertir tras la demo)
+
+El bloqueo automático **no se deshace solo** al resolverse la alerta: hay que desbloquear explícitamente (es intencionado — el admin decide cuándo reactivar).
+
+```powershell
+$body = '{"agentId":"AgentVerseIntakeAgent","mechanism":"tag","action":"unblock"}'
+
+(
+  Invoke-RestMethod `
+    -Uri $Url `
+    -Method Post `
+    -ContentType "application/json" `
+    -Body $body
+).results
+
+Start-Sleep 15
+
+az resource show `
+  --ids $Rid `
+  --query "tags" `
+  -o json
+```
+
+### Resultado esperado
+
+```json
+{
+  "MS-AOAI-Feature-Assistants": "Enabled"
+}
+```
+
+> **Presupuesto vs. alerta de métrica:** el **presupuesto** (`budget-…`) también está montado y apunta al mismo grupo de acciones, pero Cost Management factura el coste con **horas de retraso**, así que no sirve para una demo en vivo. Para demostrar el trigger *ahora* usamos la **alerta de métrica** sobre `TotalTokens`, que salta en 1–5 min. La lógica de bloqueo es idéntica en ambos casos.
+
+---
+
 # Resumen
 
 | Escenario | Qué demuestra |
@@ -380,6 +537,7 @@ OK
 | Identidad Foundry | Deshabilitar un agente preview |
 | Errores | Robustez y validación |
 | Offline | Lógica sin dependencia de Azure |
+| **Trigger real E2E** | **Saturar en Foundry → alerta → bloqueo automático** |
 
 ---
 
@@ -419,3 +577,7 @@ az rest `
   "accountEnabled": true
 }
 ```
+
+---
+
+> Si has hecho el **Escenario 6**, recuerda desbloquear con el paso 6.5 para dejar la etiqueta en `Enabled`. La alerta de métrica y el presupuesto pueden quedarse desplegados: no bloquean nada por sí mismos, solo llaman a la Function cuando se supera el consumo.
