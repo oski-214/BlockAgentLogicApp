@@ -1,0 +1,19 @@
+{
+  "schemaId": "azureMonitorCommonAlertSchema",
+  "data": {
+    "essentials": {
+      "alertRule": "budget-asst_demo123",
+      "signalType": "Budget",
+      "monitorCondition": "Fired"
+    },
+    "alertContext": {
+      "BudgetName": "budget-asst_demo123",
+      "BudgetType": "Cost",
+      "SpendingAmount": "128.55",
+      "BudgetThreshold": "100",
+      "AgentId": "asst_demo123",
+      "Action": "block",
+      "Mechanism": "foundry"
+    }
+  }
+}

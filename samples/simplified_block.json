@@ -1,0 +1,8 @@
+{
+  "agentId": "asst_demo123",
+  "budgetName": "budget-asst_demo123",
+  "spend": 128.55,
+  "budget": 100,
+  "action": "block",
+  "mechanism": "all"
+}

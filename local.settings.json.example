@@ -1,0 +1,30 @@
+{
+  "IsEncrypted": false,
+  "Values": {
+    "AzureWebJobsStorage": "UseDevelopmentStorage=true",
+    "FUNCTIONS_WORKER_RUNTIME": "python",
+
+    "//": "----- Azure / target resource -----",
+    "AZURE_SUBSCRIPTION_ID": "00000000-0000-0000-0000-000000000000",
+    "AZURE_RESOURCE_GROUP": "rg-agents",
+    "FOUNDRY_ACCOUNT_NAME": "agent-verse-resource",
+
+    "//foundry": "----- Mechanism A: Foundry REST -----",
+    "FOUNDRY_PROJECT_ENDPOINT": "https://agent-verse-resource.services.ai.azure.com/api/projects/my-project",
+    "FOUNDRY_API_VERSION": "2025-05-01",
+
+    "//graph": "----- Mechanism B: Entra Graph -----",
+    "GRAPH_SCOPE": "https://graph.microsoft.com/.default",
+
+    "//local-auth": "----- Local dev auth (omit in Azure; use Managed Identity) -----",
+    "AZURE_TENANT_ID": "",
+    "AZURE_CLIENT_ID": "",
+    "AZURE_CLIENT_SECRET": "",
+
+    "//map": "----- agentId -> targets mapping (JSON) -----",
+    "AGENT_TARGET_MAP": "{\"asst_demo123\":{\"foundry_agent_id\":\"asst_demo123\",\"service_principal_id\":\"11111111-1111-1111-1111-111111111111\"}}",
+
+    "//default": "Default block mechanism when the alert doesn't specify one: foundry | graph | tag",
+    "DEFAULT_BLOCK_MECHANISM": "foundry"
+  }
+}
