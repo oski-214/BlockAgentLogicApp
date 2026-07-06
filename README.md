@@ -1,5 +1,10 @@
 # Block agent on budget exceeded — Azure Functions POC
 
+> 🎬 **¿Quieres enseñar los escenarios al cliente?** Ve directo a
+> **[`DEMO.md`](DEMO.md)**: guía copy-paste contra la Function ya desplegada
+> (salud, bloqueo/desbloqueo real, errores). Este README es la referencia
+> técnica completa.
+
 Proof-of-concept that blocks an Azure AI Foundry agent (on the
 `agent-verse-resource` account) when a budget is exceeded, using an Azure
 Function triggered by an Azure Cost Management budget alert.
