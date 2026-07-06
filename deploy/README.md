@@ -22,7 +22,7 @@ que hacer `az login` y ejecutar un script.
 | Endpoint alerta | `https://fa-block-agent-jykza1.azurewebsites.net/api/budget-alert?code=<clave>` |
 | Storage | `stblkagentjykza1` (sin clave compartida, acceso por identidad) |
 | Identidad administrada (objectId) | `c22a5fbe-a0b6-41a4-965a-8b7ea16bbd2f` |
-| Roles concedidos | `Azure AI Developer` + `Tag Contributor` en `agent-verse-resource`; `Storage Blob Data Owner` + `Storage Queue Data Contributor` en el storage; **`Application.ReadWrite.All`** (Graph) para el Mecanismo B |
+| Roles concedidos | `Azure AI Developer` + `Cognitive Services User` + `Tag Contributor` en `agent-verse-resource`; `Storage Blob Data Owner` + `Storage Queue Data Contributor` en el storage; **`Application.ReadWrite.All`** (Graph) para el Mecanismo B |
 | Funciones activas | `budget_alert` (POST, auth FUNCTION) y `health` (GET, anónima) |
 | Agentes de prueba mapeados | `AgentVerseIntakeAgent` (identidad de Entra `39f26b00-03d9-4e0c-bd70-cdfa22f21df9`) y `SimplePromptAgent` (identidad `f55c4a61-23bf-46fd-b3d9-694d78a9138c`, agente de la demo del trigger real) |
 
@@ -32,7 +32,8 @@ que hacer `az login` y ejecutar un script.
 - **D2/D3 (Mecanismo C – etiqueta ARM):** bloqueo puso `MS-AOAI-Feature-Assistants=Disabled` (previo `Enabled`) y el desbloqueo lo revirtió a `Enabled`. Reversible y no destructivo confirmado. ✔
 - **Mecanismo B (Graph) sobre un service principal NORMAL:** la identidad administrada deshabilitó (`accountEnabled=false`) y rehabilitó un SP de prueba desechable. **Funciona end-to-end** con `Application.ReadWrite.All`. ✔
 - **Mecanismo B sobre la identidad de agente de Foundry (`39f26b00…`):** ❌ `403 Authorization_RequestDenied` desde la identidad administrada, **incluso con `Application.ReadWrite.All` + Cloud Application Administrator**. La misma operación **sí funciona con un token de Global Administrator**. Ver la nota de identidades de agente.
-- **Mecanismo A (Foundry Agent Service):** ✅ **adaptado y probado en vivo.** La Function deshabilita/rehabilita el agente con las acciones nativas `POST /agents/{id}:disable` / `:enable` (`api-version=v1`), dejando `state=disabled`/`enabled`. Lo ejecuta la **identidad administrada** (rol `Azure AI Developer`), **sin Global Admin**. Reversible y enforced por el servicio. Fallback automático a flag `metadata.blocked` (nueva versión preservando `definition`) si el entorno no expone las acciones de estado.
+- **Mecanismo A (Foundry Agent Service):** ✅ **adaptado y probado en vivo end-to-end.** La Function deshabilita/rehabilita el agente con las acciones nativas `POST /agents/{id}:disable` / `:enable` (`api-version=v1`), dejando `state=disabled`/`enabled`. Lo ejecuta la **identidad administrada**, **sin Global Admin**. Reversible y enforced por el servicio. Fallback automático a flag `metadata.blocked` (nueva versión preservando `definition`) si el entorno no expone las acciones de estado.
+  - **🔑 Rol necesario:** el data-plane de agentes (`Microsoft.CognitiveServices/*/agents/*`) **no** lo cubre `Azure AI Developer` por sí solo → devuelve `403 UserError: does not have permissions for Microsoft.CognitiveServices/accounts/AIServices/agents/read`. Hace falta además **`Cognitive Services User`** (o `Foundry User`/`Foundry Project Manager`) sobre `agent-verse-resource`. `deploy.ps1` ya concede ambos. Tras asignarlo, la propagación del plano de datos tarda 2-5 min.
 
 > **🔑 Nota sobre identidades de agente de Foundry (preview):** los agentes que
 > publicas en `agent-verse-project` (p. ej. `AgentVerseIntakeAgent`) se respaldan en
@@ -79,7 +80,7 @@ que hacer `az login` y ejecutar un script.
 
 | Mecanismo | Permiso | Ámbito | Lo concede |
 |-----------|---------|--------|------------|
-| A – Foundry | `Azure AI Developer` | `agent-verse-resource` | `deploy.ps1` |
+| A – Foundry | `Azure AI Developer` + `Cognitive Services User` | `agent-verse-resource` | `deploy.ps1` |
 | C – Etiqueta ARM | `Tag Contributor` | `agent-verse-resource` | `deploy.ps1` |
 | B – Graph | `Application.ReadWrite.All` | Todo el tenant (Graph) | `grant-graph-permission.ps1` (**Global Admin**) |
 

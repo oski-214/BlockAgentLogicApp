@@ -382,7 +382,7 @@ Este es **el escenario que convence**: el flujo completo **sin llamar a la Funct
 | Alerta de métrica | `budget-SimplePromptAgent` | Salta cuando `TotalTokens > 1000` en 1 min sobre `agent-verse-resource` |
 | Presupuesto | `budget-SimplePromptAgent` | Presupuesto de coste (1 €, aviso al 80 %) → mismo grupo de acciones |
 
-La Function lee el nombre de la regla de alerta (`budget-<agente>`) del payload y resuelve el agente (`SimplePromptAgent`). La alerta real **no** trae mecanismo, así que la Function usa el mecanismo por defecto (`DEFAULT_BLOCK_MECHANISM=tag`) y bloquea de forma autónoma y visible en el portal.
+La Function lee el nombre de la regla de alerta (`budget-<agente>`) del payload y resuelve el agente (`SimplePromptAgent`). La alerta real **no** trae mecanismo, así que la Function usa el mecanismo por defecto (**`DEFAULT_BLOCK_MECHANISM=foundry`**): deshabilita el **estado nativo** del agente de Foundry (`state=disabled`) de forma autónoma. Resultado visible y contundente: **el agente deja de responder en el propio playground**, no es un simple flag.
 
 ## El flujo
 
@@ -396,7 +396,7 @@ Alerta de métrica  budget-SimplePromptAgent  (TotalTokens > 1000, ventana 1 min
 Grupo de acciones  ag-block-agent  (webhook, esquema común)
         │  POST del payload de alerta
         ▼
-Azure Function  →  mecanismo por defecto (tag)  →  MS-AOAI-Feature-Assistants = Disabled
+Azure Function  →  mecanismo por defecto (foundry)  →  POST /agents/SimplePromptAgent:disable  →  state = "disabled"
         │
         ▼
 Agente bloqueado automáticamente (visible en el portal de Azure)
@@ -407,18 +407,24 @@ Agente bloqueado automáticamente (visible en el portal de Azure)
 ## 6.1 Estado ANTES
 
 ```powershell
-az resource show `
-  --ids $Rid `
-  --query "tags" `
-  -o json
+$tok = az account get-access-token `
+  --scope "https://ai.azure.com/.default" `
+  --query accessToken -o tsv
+
+$FoundryEp = "https://agent-verse-resource.services.ai.azure.com/api/projects/agent-verse-project"
+
+Invoke-RestMethod `
+  -Uri "$FoundryEp/agents/SimplePromptAgent?api-version=v1" `
+  -Headers @{ Authorization = "Bearer $tok" } |
+  Select-Object id, state
 ```
 
 ### Resultado esperado
 
-```json
-{
-  "MS-AOAI-Feature-Assistants": "Enabled"
-}
+```text
+id                state
+--                -----
+SimplePromptAgent enabled
 ```
 
 ---
@@ -462,19 +468,21 @@ En el portal: **Monitor → Alertas** → verás una alerta `Fired` para `budget
 ## 6.4 Comprobar que el agente se bloqueó SOLO
 
 ```powershell
-az resource show `
-  --ids $Rid `
-  --query "tags" `
-  -o json
+Invoke-RestMethod `
+  -Uri "$FoundryEp/agents/SimplePromptAgent?api-version=v1" `
+  -Headers @{ Authorization = "Bearer $tok" } |
+  Select-Object id, state
 ```
 
 ### Resultado esperado
 
-```json
-{
-  "MS-AOAI-Feature-Assistants": "Disabled"
-}
+```text
+id                state
+--                -----
+SimplePromptAgent disabled
 ```
+
+**Prueba visual definitiva:** vuelve al **playground de Foundry** e intenta usar `SimplePromptAgent` → el servicio ya **no lo sirve** (el agente está deshabilitado). No es un flag: es el estado nativo enforced por Foundry.
 
 Comprobar que la Function se ejecutó (traza en Application Insights):
 
@@ -497,7 +505,7 @@ También en el portal: **Function App → Functions → budget-alert → Invocat
 El bloqueo automático **no se deshace solo** al resolverse la alerta: hay que desbloquear explícitamente (es intencionado — el admin decide cuándo reactivar).
 
 ```powershell
-$body = '{"agentId":"SimplePromptAgent","mechanism":"tag","action":"unblock"}'
+$body = '{"agentId":"SimplePromptAgent","mechanism":"foundry","action":"unblock"}'
 
 (
   Invoke-RestMethod `
@@ -507,20 +515,20 @@ $body = '{"agentId":"SimplePromptAgent","mechanism":"tag","action":"unblock"}'
     -Body $body
 ).results
 
-Start-Sleep 15
+Start-Sleep 5
 
-az resource show `
-  --ids $Rid `
-  --query "tags" `
-  -o json
+Invoke-RestMethod `
+  -Uri "$FoundryEp/agents/SimplePromptAgent?api-version=v1" `
+  -Headers @{ Authorization = "Bearer $tok" } |
+  Select-Object id, state
 ```
 
 ### Resultado esperado
 
-```json
-{
-  "MS-AOAI-Feature-Assistants": "Enabled"
-}
+```text
+id                state
+--                -----
+SimplePromptAgent enabled
 ```
 
 > **Presupuesto vs. alerta de métrica:** el **presupuesto** (`budget-…`) también está montado y apunta al mismo grupo de acciones, pero Cost Management factura el coste con **horas de retraso**, así que no sirve para una demo en vivo. Para demostrar el trigger *ahora* usamos la **alerta de métrica** sobre `TotalTokens`, que salta en 1–5 min. La lógica de bloqueo es idéntica en ambos casos.
@@ -597,7 +605,7 @@ $body = '{"agentId":"f55c4a61-23bf-46fd-b3d9-694d78a9138c","mechanism":"foundry"
 # state vuelve a enabled
 ```
 
-> **Mensaje para el cliente:** este es el bloqueo más limpio para agentes de Foundry: lo aplica la Function **por sí sola** (sin Global Admin), lo **enforcea el servicio** (no es un flag) y es **totalmente reversible**. El trigger real del Escenario 6 puede apuntarse a este mecanismo cambiando `DEFAULT_BLOCK_MECHANISM=foundry`.
+> **Mensaje para el cliente:** este es el bloqueo más limpio para agentes de Foundry: lo aplica la Function **por sí sola** (sin Global Admin), lo **enforcea el servicio** (no es un flag) y es **totalmente reversible**. El trigger real del Escenario 6 **ya usa este mecanismo** (`DEFAULT_BLOCK_MECHANISM=foundry`), así que la saturación desde el playground acaba deshabilitando el estado nativo del agente.
 
 ---
 
@@ -629,7 +637,7 @@ POST /agents/{id}:enable?api-version=v1    ->  state = "enabled"
 
 Ventajas frente al mecanismo B para agentes de Foundry:
 
-- **Es autónomo:** lo ejecuta la propia identidad administrada de la Function (rol `Azure AI Developer`); **no** requiere Global Administrator (el mecanismo B sobre la `agentIdentity` preview sí lo requiere).
+- **Es autónomo:** lo ejecuta la propia identidad administrada de la Function (roles `Azure AI Developer` **+ `Cognitive Services User`**); **no** requiere Global Administrator (el mecanismo B sobre la `agentIdentity` preview sí lo requiere). El data-plane de agentes (`Microsoft.CognitiveServices/*/agents/*`) exige `Cognitive Services User`: sin él, la API devuelve `403 UserError: ...does not have permissions for ...agents/read`.
 - **Es enforced por el servicio:** `state=disabled` es un estado de primera clase del agente, no un simple flag de metadatos.
 - **Es reversible y no destructivo:** `:enable` restaura el estado y no se borra nada.
 
@@ -639,7 +647,17 @@ Si el entorno apuntara a una API antigua sin estas acciones (`404`/`405`), la Fu
 
 # Limpieza final
 
-Verificar que la etiqueta ha vuelto a Enabled:
+Verificar que el agente de Foundry ha vuelto a `enabled` (si hiciste el Escenario 6 o 7):
+
+```powershell
+Invoke-RestMethod `
+  -Uri "$FoundryEp/agents/SimplePromptAgent?api-version=v1" `
+  -Headers @{ Authorization = "Bearer $tok" } |
+  Select-Object id, state
+# state = enabled
+```
+
+Verificar que la etiqueta sigue en Enabled (mecanismo C):
 
 ```powershell
 az resource show `
@@ -666,4 +684,4 @@ az rest `
 
 ---
 
-> Si has hecho el **Escenario 6**, recuerda desbloquear con el paso 6.5 para dejar la etiqueta en `Enabled`. La alerta de métrica y el presupuesto pueden quedarse desplegados: no bloquean nada por sí mismos, solo llaman a la Function cuando se supera el consumo.
+> Si has hecho el **Escenario 6**, recuerda desbloquear con el paso 6.5 para dejar el agente en `enabled`. La alerta de métrica y el presupuesto pueden quedarse desplegados: no bloquean nada por sí mismos, solo llaman a la Function cuando se supera el consumo.
