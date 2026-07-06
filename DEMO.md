@@ -34,8 +34,8 @@ $Url
 # Recurso Foundry
 $Rid = "/subscriptions/72dc9a1e-135b-49cb-86e6-80630340cade/resourceGroups/rg-agent-verse/providers/Microsoft.CognitiveServices/accounts/agent-verse-resource"
 
-# Identidad del agente de demo
-$AgentId = "39f26b00-03d9-4e0c-bd70-cdfa22f21df9"
+# Identidad del agente de demo (SimplePromptAgent)
+$AgentId = "f55c4a61-23bf-46fd-b3d9-694d78a9138c"
 
 if (-not $AgentId) {
   throw "AgentId vacío"
@@ -83,7 +83,7 @@ $Url
 | Región | `swedencentral` |
 | Recurso Foundry | `agent-verse-resource` |
 | Proyecto | `agent-verse-project` |
-| Agente demo | `AgentVerseIntakeAgent` |
+| Agente demo | `SimplePromptAgent` |
 
 ---
 
@@ -379,10 +379,10 @@ Este es **el escenario que convence**: el flujo completo **sin llamar a la Funct
 | Elemento | Nombre | Qué hace |
 |----------|--------|----------|
 | Grupo de acciones | `ag-block-agent` | Webhook que llama a la Function cuando salta una alerta (esquema común activado) |
-| Alerta de métrica | `budget-AgentVerseIntakeAgent` | Salta cuando `TotalTokens > 1000` en 1 min sobre `agent-verse-resource` |
-| Presupuesto | `budget-AgentVerseIntakeAgent` | Presupuesto de coste (1 €, aviso al 80 %) → mismo grupo de acciones |
+| Alerta de métrica | `budget-SimplePromptAgent` | Salta cuando `TotalTokens > 1000` en 1 min sobre `agent-verse-resource` |
+| Presupuesto | `budget-SimplePromptAgent` | Presupuesto de coste (1 €, aviso al 80 %) → mismo grupo de acciones |
 
-La Function lee el nombre de la regla de alerta (`budget-<agente>`) del payload y resuelve el agente (`AgentVerseIntakeAgent`). La alerta real **no** trae mecanismo, así que la Function usa el mecanismo por defecto (`DEFAULT_BLOCK_MECHANISM=tag`) y bloquea de forma autónoma y visible en el portal.
+La Function lee el nombre de la regla de alerta (`budget-<agente>`) del payload y resuelve el agente (`SimplePromptAgent`). La alerta real **no** trae mecanismo, así que la Function usa el mecanismo por defecto (`DEFAULT_BLOCK_MECHANISM=tag`) y bloquea de forma autónoma y visible en el portal.
 
 ## El flujo
 
@@ -390,7 +390,7 @@ La Function lee el nombre de la regla de alerta (`budget-<agente>`) del payload 
 Portal de Foundry (saturas el agente con un prompt grande)
         │  se disparan miles de TotalTokens
         ▼
-Alerta de métrica  budget-AgentVerseIntakeAgent  (TotalTokens > 1000, ventana 1 min)
+Alerta de métrica  budget-SimplePromptAgent  (TotalTokens > 1000, ventana 1 min)
         │  monitorCondition = Fired
         ▼
 Grupo de acciones  ag-block-agent  (webhook, esquema común)
@@ -425,7 +425,7 @@ az resource show `
 
 ## 6.2 Saturar el agente desde el portal de Foundry
 
-1. Abre el **portal de Azure AI Foundry** → proyecto `agent-verse-project` → agente **`AgentVerseIntakeAgent`** → **Playground / Chat**.
+1. Abre el **portal de Azure AI Foundry** → proyecto `agent-verse-project` → agente **`SimplePromptAgent`** → **Playground / Chat**.
 2. Pega el siguiente **prompt de saturación** y envíalo (genera miles de tokens, muy por encima del umbral de 1000 en la ventana de 1 min):
 
 ```text
@@ -449,13 +449,13 @@ Seguir el estado de la alerta:
 
 ```powershell
 az monitor metrics alert show `
-  --name budget-AgentVerseIntakeAgent `
+  --name budget-SimplePromptAgent `
   --resource-group rg-block-agent `
   --query "enabled" `
   -o json
 ```
 
-En el portal: **Monitor → Alertas** → verás una alerta `Fired` para `budget-AgentVerseIntakeAgent`.
+En el portal: **Monitor → Alertas** → verás una alerta `Fired` para `budget-SimplePromptAgent`.
 
 ---
 
@@ -497,7 +497,7 @@ También en el portal: **Function App → Functions → budget-alert → Invocat
 El bloqueo automático **no se deshace solo** al resolverse la alerta: hay que desbloquear explícitamente (es intencionado — el admin decide cuándo reactivar).
 
 ```powershell
-$body = '{"agentId":"AgentVerseIntakeAgent","mechanism":"tag","action":"unblock"}'
+$body = '{"agentId":"SimplePromptAgent","mechanism":"tag","action":"unblock"}'
 
 (
   Invoke-RestMethod `

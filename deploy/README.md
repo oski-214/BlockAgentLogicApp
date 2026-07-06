@@ -24,7 +24,7 @@ que hacer `az login` y ejecutar un script.
 | Identidad administrada (objectId) | `c22a5fbe-a0b6-41a4-965a-8b7ea16bbd2f` |
 | Roles concedidos | `Azure AI Developer` + `Tag Contributor` en `agent-verse-resource`; `Storage Blob Data Owner` + `Storage Queue Data Contributor` en el storage; **`Application.ReadWrite.All`** (Graph) para el Mecanismo B |
 | Funciones activas | `budget_alert` (POST, auth FUNCTION) y `health` (GET, anónima) |
-| Agente de prueba mapeado | `AgentVerseIntakeAgent` (id de identidad de Entra `39f26b00-03d9-4e0c-bd70-cdfa22f21df9`) |
+| Agentes de prueba mapeados | `AgentVerseIntakeAgent` (identidad de Entra `39f26b00-03d9-4e0c-bd70-cdfa22f21df9`) y `SimplePromptAgent` (identidad `f55c4a61-23bf-46fd-b3d9-694d78a9138c`, agente de la demo del trigger real) |
 
 ### Resultados de pruebas en vivo ya realizadas
 - **D1 (salud):** `200 OK` → `{"status":"ok","mechanisms":["foundry","graph","tag"]}`. ✔
