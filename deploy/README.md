@@ -22,15 +22,37 @@ que hacer `az login` y ejecutar un script.
 | Endpoint alerta | `https://fa-block-agent-jykza1.azurewebsites.net/api/budget-alert?code=<clave>` |
 | Storage | `stblkagentjykza1` (sin clave compartida, acceso por identidad) |
 | Identidad administrada (objectId) | `c22a5fbe-a0b6-41a4-965a-8b7ea16bbd2f` |
-| Roles concedidos | `Azure AI Developer` + `Tag Contributor` en `agent-verse-resource`; `Storage Blob Data Owner` + `Storage Queue Data Contributor` en el storage |
+| Roles concedidos | `Azure AI Developer` + `Tag Contributor` en `agent-verse-resource`; `Storage Blob Data Owner` + `Storage Queue Data Contributor` en el storage; **`Application.ReadWrite.All`** (Graph) para el Mecanismo B |
 | Funciones activas | `budget_alert` (POST, auth FUNCTION) y `health` (GET, anónima) |
+| Agente de prueba mapeado | `AgentVerseIntakeAgent` (id de identidad de Entra `39f26b00-03d9-4e0c-bd70-cdfa22f21df9`) |
 
 ### Resultados de pruebas en vivo ya realizadas
-- **D1 (salud):** `200 OK` → `{"status":"ok","mechanisms":["foundry","graph","tag"]}`.
+- **D1 (salud):** `200 OK` → `{"status":"ok","mechanisms":["foundry","graph","tag"]}`. ✔
 - **D8 (errores):** `422` sin agente y `400` con mecanismo inválido. ✔
-- **D2/D3 (Mecanismo C – etiqueta ARM):** bloqueo puso `MS-AOAI-Feature-Assistants=Disabled` (estado previo `Enabled`) y el desbloqueo lo revirtió a `Enabled`. Reversible y no destructivo confirmado. ✔
-- **Mecanismo A (Foundry):** no probado en vivo porque el proyecto `agent-verse-project` aún no tiene agentes (`agentTargetMap` está vacío).
-- **Mecanismo B (Graph):** pendiente de consentimiento de Global Admin.
+- **D2/D3 (Mecanismo C – etiqueta ARM):** bloqueo puso `MS-AOAI-Feature-Assistants=Disabled` (previo `Enabled`) y el desbloqueo lo revirtió a `Enabled`. Reversible y no destructivo confirmado. ✔
+- **Mecanismo B (Graph) sobre un service principal NORMAL:** la identidad administrada deshabilitó (`accountEnabled=false`) y rehabilitó un SP de prueba desechable. **Funciona end-to-end** con `Application.ReadWrite.All`. ✔
+- **Mecanismo B sobre la identidad de agente de Foundry (`39f26b00…`):** ❌ `403 Authorization_RequestDenied` desde la identidad administrada, **incluso con `Application.ReadWrite.All` + Cloud Application Administrator**. La misma operación **sí funciona con un token de Global Administrator**. Ver la nota de identidades de agente.
+- **Mecanismo A (Foundry):** el agente publicado usa el **Foundry Agent Service (agentes persistentes)**, cuyo modelo de actualización difiere del de la implementación actual (ver nota).
+
+> **🔑 Nota sobre identidades de agente de Foundry (preview):** los agentes que
+> publicas en `agent-verse-project` (p. ej. `AgentVerseIntakeAgent`) se respaldan en
+> Entra con un objeto `servicePrincipal` de tipo **`agentIdentity` / `ServiceIdentity`**
+> (tu "agent ID" `39f26b00…` es justo ese objeto). Estas identidades **preview** están
+> más protegidas: deshabilitar su `accountEnabled` **requiere un Global Administrator**;
+> los permisos de aplicación (`Application.ReadWrite.All`) y el rol Cloud Application
+> Administrator son rechazados con `403`. Por eso, para **agentes de Foundry** el
+> "block" del Mecanismo B lo debe ejecutar un GA (o un flujo con credenciales de GA),
+> mientras que para **agentes clásicos (agent-builder)** respaldados por un SP normal,
+> la identidad administrada con `Application.ReadWrite.All` es suficiente (probado).
+
+> **🔑 Nota sobre el Mecanismo A y el Agent Service:** el proyecto usa la API nueva de
+> agentes (`/agents`, `api-version=v1`), donde un agente tiene `state` y versiones con
+> `definition`; no admite el simple `POST {metadata:{blocked:true}}` de la API estilo
+> *assistants* (devuelve `required: definition`). La implementación actual de `foundry.py`
+> encaja con la API *assistants*; para los agentes persistentes de Foundry el bloqueo
+> recomendado es **deshabilitar la identidad del agente** (Mecanismo B, que para preview
+> requiere GA). Adaptar A a la API nueva (publicar versión con `metadata`) queda como
+> mejora pendiente.
 
 > **⚠️ Nota de política del tenant (importante):** tu tenant **prohíbe la
 > autenticación por clave compartida en Storage** y **deshabilita el basic auth de

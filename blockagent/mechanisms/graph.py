@@ -27,22 +27,33 @@ def _headers(config: Config, credential=None) -> Dict[str, str]:
     return {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
 
 
+def _raise_with_body(resp: requests.Response) -> None:
+    """Raise for HTTP error, including the Graph response body for diagnosis."""
+    try:
+        resp.raise_for_status()
+    except requests.HTTPError as exc:
+        body = (resp.text or "").strip()
+        raise requests.HTTPError(f"{exc} :: {body}", response=resp) from None
+
+
 def _get_sp(sp_id: str, headers: Dict[str, str]) -> Dict[str, Any]:
     url = f"{GRAPH_BASE}/servicePrincipals/{sp_id}"
     resp = requests.get(url, headers=headers, params={"$select": "id,displayName,accountEnabled"}, timeout=30)
-    resp.raise_for_status()
+    _raise_with_body(resp)
     return resp.json()
 
 
 def _patch_enabled(sp_id: str, enabled: bool, headers: Dict[str, str]) -> None:
     url = f"{GRAPH_BASE}/servicePrincipals/{sp_id}"
     resp = requests.patch(url, headers=headers, json={"accountEnabled": enabled}, timeout=30)
-    resp.raise_for_status()
+    _raise_with_body(resp)
 
 
 def _apply(config: Config, target: AgentTarget, block: bool, credential=None) -> BlockResult:
     action = "block" if block else "unblock"
-    sp_id = target.service_principal_id
+    # Fall back to the alert's agent id: for agent identities the agent id IS the
+    # service principal object id, so a mapping is optional.
+    sp_id = target.service_principal_id or target.agent_id
     if not sp_id:
         return BlockResult(
             MECHANISM,
