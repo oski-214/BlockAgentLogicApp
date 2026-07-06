@@ -4,18 +4,48 @@ Infraestructura como código (Bicep) + scripts para desplegar la Function con lo
 **permisos mínimos** que necesita cada mecanismo. Diseñado para que solo tengas
 que hacer `az login` y ejecutar un script.
 
-> **Estado actual:** la Function **no está desplegada** en ningún Azure. No se
-> pudo desplegar automáticamente porque el despliegue requiere tu identidad de
-> Azure (`az login`, suscripción, MFA) y, para el Mecanismo B, consentimiento de
-> Global Admin. Todo lo demás está preparado aquí.
+> **Estado actual: ✅ YA DESPLEGADA en tu suscripción.** La infraestructura y el
+> código están desplegados y funcionando (ver "Lo que ya está desplegado" más
+> abajo). Solo queda pendiente el **Mecanismo B (Graph)**, que necesita
+> consentimiento de un **Global Admin** (`grant-graph-permission.ps1`). Esta guía
+> sirve tanto para reproducir el despliegue desde cero como para operar el que ya
+> existe.
+
+## Lo que ya está desplegado
+
+| Recurso | Valor |
+|---------|-------|
+| Grupo de recursos | `rg-block-agent` (swedencentral) |
+| Plan | **Flex Consumption (FC1)** — no Consumo clásico (ver nota del tenant) |
+| Function App | `fa-block-agent-jykza1` |
+| Endpoint salud | `https://fa-block-agent-jykza1.azurewebsites.net/api/health` |
+| Endpoint alerta | `https://fa-block-agent-jykza1.azurewebsites.net/api/budget-alert?code=<clave>` |
+| Storage | `stblkagentjykza1` (sin clave compartida, acceso por identidad) |
+| Identidad administrada (objectId) | `c22a5fbe-a0b6-41a4-965a-8b7ea16bbd2f` |
+| Roles concedidos | `Azure AI Developer` + `Tag Contributor` en `agent-verse-resource`; `Storage Blob Data Owner` + `Storage Queue Data Contributor` en el storage |
+| Funciones activas | `budget_alert` (POST, auth FUNCTION) y `health` (GET, anónima) |
+
+### Resultados de pruebas en vivo ya realizadas
+- **D1 (salud):** `200 OK` → `{"status":"ok","mechanisms":["foundry","graph","tag"]}`.
+- **D8 (errores):** `422` sin agente y `400` con mecanismo inválido. ✔
+- **D2/D3 (Mecanismo C – etiqueta ARM):** bloqueo puso `MS-AOAI-Feature-Assistants=Disabled` (estado previo `Enabled`) y el desbloqueo lo revirtió a `Enabled`. Reversible y no destructivo confirmado. ✔
+- **Mecanismo A (Foundry):** no probado en vivo porque el proyecto `agent-verse-project` aún no tiene agentes (`agentTargetMap` está vacío).
+- **Mecanismo B (Graph):** pendiente de consentimiento de Global Admin.
+
+> **⚠️ Nota de política del tenant (importante):** tu tenant **prohíbe la
+> autenticación por clave compartida en Storage** y **deshabilita el basic auth de
+> SCM**. Por eso el plan de **Consumo clásico (Y1) no funciona** (su content share
+> necesita claves). La solución desplegada usa **Flex Consumption** con storage por
+> **identidad administrada** (`AzureWebJobsStorage__accountName` +
+> `__credential=managedidentity`) y `allowSharedKeyAccess:false`.
 
 ## Contenido
 
 | Archivo | Qué hace |
 |---------|----------|
-| `main.bicep` | Storage + Function App (Linux, Python 3.11) + Managed Identity + App Settings |
-| `main.parameters.json` | Parámetros a rellenar (nombres, suscripción, RG de `agent-verse-resource`, endpoint, mapa de agentes) |
-| `deploy.ps1` | Despliega el Bicep, asigna roles A y C, y publica el código |
+| `main.bicep` | Storage (sin clave, por identidad) + Function App **Flex Consumption** (Python 3.11) + Managed Identity + roles de storage + App Settings |
+| `main.parameters.json` | Parámetros ya rellenos con tus valores reales (suscripción, RG de `agent-verse-resource`, endpoint del proyecto, `agentTargetMap`) |
+| `deploy.ps1` | Despliega el Bicep, asigna roles A y C, y publica el código (`func ... --python`) |
 | `grant-graph-permission.ps1` | Otorga el permiso de Graph del Mecanismo B (necesita Global Admin) |
 
 ## Permisos que se conceden (mínimo privilegio)
@@ -29,32 +59,39 @@ que hacer `az login` y ejecutar un script.
 ## Prerrequisitos
 
 - `az login` con permisos para crear recursos y asignar roles.
-- Azure Functions Core Tools v4 (`func`).
-- Editar `deploy/main.parameters.json` con tus valores reales.
+- Azure Functions Core Tools v4 (`func`) y Bicep (`az bicep`).
+- `deploy/main.parameters.json` ya está relleno con tus valores reales.
 
 ## Pasos
 
+> Estos pasos **ya se han ejecutado** contra tu suscripción. Repítelos solo si
+> quieres recrear la infraestructura desde cero (p. ej. en otro RG/suscripción).
+
 ```powershell
 az login
-# 1) Edita deploy/main.parameters.json (nombres únicos, suscripción, RG, endpoint, agentTargetMap)
 
-# 2) Despliega infra + roles A/C + publica el código
-./deploy/deploy.ps1 -ResourceGroup rg-block-agent -Location westeurope
+# 1) main.parameters.json ya está relleno (suscripción, RG, endpoint, agentTargetMap).
 
-# 3) (Opcional pero necesario para el Mecanismo B) Global Admin:
-./deploy/grant-graph-permission.ps1 -PrincipalId <objectId-que-imprime-el-paso-2>
+# 2) Despliega infra (Flex Consumption) + roles A/C + publica el código.
+#    El publish usa 'func azure functionapp publish <app> --python' (obligatorio el
+#    flag --python en Flex sin local.settings.json).
+./deploy/deploy.ps1 -ResourceGroup rg-block-agent -Location swedencentral
+
+# 3) (Pendiente — necesario para el Mecanismo B) Global Admin:
+./deploy/grant-graph-permission.ps1 -PrincipalId c22a5fbe-a0b6-41a4-965a-8b7ea16bbd2f
 ```
 
-Al terminar, comprueba salud:
+Comprueba salud (ya responde OK):
 
 ```
-GET https://<functionApp>.azurewebsites.net/api/health
+GET https://fa-block-agent-jykza1.azurewebsites.net/api/health
 ```
 
 ## Conectar el disparador de presupuesto
 
 1. Crea un **Action Group** con acción **Webhook** →
-   `https://<functionApp>.azurewebsites.net/api/budget-alert?code=<clave>`, con el
+   `https://fa-block-agent-jykza1.azurewebsites.net/api/budget-alert?code=<clave>`
+   (obtén la clave con `az functionapp keys list --name fa-block-agent-jykza1 --resource-group rg-block-agent --query "functionKeys.default" -o tsv`), con el
    **esquema de alerta común** activado.
 2. Crea un **presupuesto** en Cost Management sobre `agent-verse-resource` (o su
    RG). Nómbralo `budget-<agentId>` para transportar el id del agente.

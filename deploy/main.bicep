@@ -38,6 +38,11 @@ param agentTargetMap string = '{}'
 param defaultBlockMechanism string = 'foundry'
 
 var storageAccountId = storageAccount.id
+var deploymentContainerName = 'app-package'
+
+// Well-known built-in role definition ids (storage, identity-based access).
+var roleStorageBlobDataOwner = 'b7e6dc6d-f1e8-4753-8033-0f276bb0955b'
+var roleStorageQueueDataContributor = '974c5e8b-45b9-4653-ba55-5f855dd0fb88'
 
 resource storageAccount 'Microsoft.Storage/storageAccounts@2023-05-01' = {
   name: storageAccountName
@@ -47,14 +52,29 @@ resource storageAccount 'Microsoft.Storage/storageAccounts@2023-05-01' = {
   properties: {
     minimumTlsVersion: 'TLS1_2'
     allowBlobPublicAccess: false
+    // Tenant policy forbids shared-key auth; the Function uses its managed
+    // identity for all storage access instead.
+    allowSharedKeyAccess: false
   }
 }
 
+resource blobService 'Microsoft.Storage/storageAccounts/blobServices@2023-05-01' = {
+  parent: storageAccount
+  name: 'default'
+}
+
+resource deploymentContainer 'Microsoft.Storage/storageAccounts/blobServices/containers@2023-05-01' = {
+  parent: blobService
+  name: deploymentContainerName
+  properties: { publicAccess: 'None' }
+}
+
+// Flex Consumption plan (managed-identity storage, no shared keys required).
 resource plan 'Microsoft.Web/serverfarms@2023-12-01' = {
   name: '${functionAppName}-plan'
   location: location
-  sku: { name: 'Y1', tier: 'Dynamic' }
-  kind: 'linux'
+  sku: { name: 'FC1', tier: 'FlexConsumption' }
+  kind: 'functionapp'
   properties: { reserved: true }
 }
 
@@ -67,15 +87,24 @@ resource functionApp 'Microsoft.Web/sites@2023-12-01' = {
     serverFarmId: plan.id
     reserved: true
     httpsOnly: true
+    functionAppConfig: {
+      deployment: {
+        storage: {
+          type: 'blobContainer'
+          value: '${storageAccount.properties.primaryEndpoints.blob}${deploymentContainerName}'
+          authentication: { type: 'SystemAssignedIdentity' }
+        }
+      }
+      runtime: { name: 'python', version: '3.11' }
+      scaleAndConcurrency: { maximumInstanceCount: 40, instanceMemoryMB: 2048 }
+    }
     siteConfig: {
-      linuxFxVersion: 'Python|3.11'
       ftpsState: 'Disabled'
       minTlsVersion: '1.2'
       appSettings: [
-        { name: 'AzureWebJobsStorage', value: 'DefaultEndpointsProtocol=https;AccountName=${storageAccount.name};EndpointSuffix=${environment().suffixes.storage};AccountKey=${storageAccount.listKeys().keys[0].value}' }
-        { name: 'FUNCTIONS_EXTENSION_VERSION', value: '~4' }
-        { name: 'FUNCTIONS_WORKER_RUNTIME', value: 'python' }
-        { name: 'AzureWebJobsFeatureFlags', value: 'EnableWorkerIndexing' }
+        // Identity-based AzureWebJobsStorage (no account key).
+        { name: 'AzureWebJobsStorage__accountName', value: storageAccount.name }
+        { name: 'AzureWebJobsStorage__credential', value: 'managedidentity' }
         { name: 'AZURE_SUBSCRIPTION_ID', value: foundrySubscriptionId }
         { name: 'AZURE_RESOURCE_GROUP', value: foundryResourceGroup }
         { name: 'FOUNDRY_ACCOUNT_NAME', value: foundryAccountName }
@@ -86,6 +115,28 @@ resource functionApp 'Microsoft.Web/sites@2023-12-01' = {
         { name: 'DEFAULT_BLOCK_MECHANISM', value: defaultBlockMechanism }
       ]
     }
+  }
+}
+
+// Grant the Function's managed identity access to its storage (blob + queue),
+// used for both the deployment package and the Functions runtime state.
+resource blobRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(storageAccount.id, functionApp.id, roleStorageBlobDataOwner)
+  scope: storageAccount
+  properties: {
+    principalId: functionApp.identity.principalId
+    principalType: 'ServicePrincipal'
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', roleStorageBlobDataOwner)
+  }
+}
+
+resource queueRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(storageAccount.id, functionApp.id, roleStorageQueueDataContributor)
+  scope: storageAccount
+  properties: {
+    principalId: functionApp.identity.principalId
+    principalType: 'ServicePrincipal'
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', roleStorageQueueDataContributor)
   }
 }
 

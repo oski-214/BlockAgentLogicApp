@@ -2,14 +2,14 @@
   "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
   "contentVersion": "1.0.0.0",
   "parameters": {
-    "functionAppName": { "value": "fa-block-agent-CHANGEME" },
-    "storageAccountName": { "value": "stblockagentCHANGEME" },
-    "foundrySubscriptionId": { "value": "00000000-0000-0000-0000-000000000000" },
-    "foundryResourceGroup": { "value": "rg-agents" },
+    "functionAppName": { "value": "fa-block-agent-jykza1" },
+    "storageAccountName": { "value": "stblkagentjykza1" },
+    "foundrySubscriptionId": { "value": "72dc9a1e-135b-49cb-86e6-80630340cade" },
+    "foundryResourceGroup": { "value": "rg-agent-verse" },
     "foundryAccountName": { "value": "agent-verse-resource" },
-    "foundryProjectEndpoint": { "value": "https://agent-verse-resource.services.ai.azure.com/api/projects/my-project" },
+    "foundryProjectEndpoint": { "value": "https://agent-verse-resource.services.ai.azure.com/api/projects/agent-verse-project" },
     "foundryApiVersion": { "value": "2025-05-01" },
-    "agentTargetMap": { "value": "{\"asst_demo123\":{\"foundry_agent_id\":\"asst_demo123\",\"service_principal_id\":\"11111111-1111-1111-1111-111111111111\"}}" },
+    "agentTargetMap": { "value": "{}" },
     "defaultBlockMechanism": { "value": "foundry" }
   }
 }
