@@ -1,170 +1,57 @@
-# Despliegue de la Azure Function
+# Despliegue (`deploy/`)
 
-Infraestructura como código (Bicep) + scripts para desplegar la Function con los
-**permisos mínimos** que necesita cada mecanismo. Diseñado para que solo tengas
-que hacer `az login` y ejecutar un script.
-
-> **Estado actual: ✅ YA DESPLEGADA en tu suscripción.** La infraestructura y el
-> código están desplegados y funcionando (ver "Lo que ya está desplegado" más
-> abajo). Solo queda pendiente el **Mecanismo B (Graph)**, que necesita
-> consentimiento de un **Global Admin** (`grant-graph-permission.ps1`). Esta guía
-> sirve tanto para reproducir el despliegue desde cero como para operar el que ya
-> existe.
-
-## Lo que ya está desplegado
-
-| Recurso | Valor |
-|---------|-------|
-| Grupo de recursos | `rg-block-agent` (swedencentral) |
-| Plan | **Flex Consumption (FC1)** — no Consumo clásico (ver nota del tenant) |
-| Function App | `fa-block-agent-jykza1` |
-| Endpoint salud | `https://fa-block-agent-jykza1.azurewebsites.net/api/health` |
-| Endpoint alerta | `https://fa-block-agent-jykza1.azurewebsites.net/api/budget-alert?code=<clave>` |
-| Storage | `stblkagentjykza1` (sin clave compartida, acceso por identidad) |
-| Identidad administrada (objectId) | `c22a5fbe-a0b6-41a4-965a-8b7ea16bbd2f` |
-| Roles concedidos | `Azure AI Developer` + `Cognitive Services User` + `Tag Contributor` en `agent-verse-resource`; `Storage Blob Data Owner` + `Storage Queue Data Contributor` en el storage; **`Application.ReadWrite.All`** (Graph) para el Mecanismo B |
-| Funciones activas | `budget_alert` (POST, auth FUNCTION) y `health` (GET, anónima) |
-| Agentes de prueba mapeados | `AgentVerseIntakeAgent` (identidad de Entra `39f26b00-03d9-4e0c-bd70-cdfa22f21df9`) y `SimplePromptAgent` (identidad `f55c4a61-23bf-46fd-b3d9-694d78a9138c`, agente de la demo del trigger real) |
-
-### Resultados de pruebas en vivo ya realizadas
-- **D1 (salud):** `200 OK` → `{"status":"ok","mechanisms":["foundry","graph","tag"]}`. ✔
-- **D8 (errores):** `422` sin agente y `400` con mecanismo inválido. ✔
-- **D2/D3 (Mecanismo C – etiqueta ARM):** bloqueo puso `MS-AOAI-Feature-Assistants=Disabled` (previo `Enabled`) y el desbloqueo lo revirtió a `Enabled`. Reversible y no destructivo confirmado. ✔
-- **Mecanismo B (Graph) sobre un service principal NORMAL:** la identidad administrada deshabilitó (`accountEnabled=false`) y rehabilitó un SP de prueba desechable. **Funciona end-to-end** con `Application.ReadWrite.All`. ✔
-- **Mecanismo B sobre la identidad de agente de Foundry (`39f26b00…`):** ❌ `403 Authorization_RequestDenied` desde la identidad administrada, **incluso con `Application.ReadWrite.All` + Cloud Application Administrator**. La misma operación **sí funciona con un token de Global Administrator**. Ver la nota de identidades de agente.
-- **Mecanismo A (Foundry Agent Service):** ✅ **adaptado y probado en vivo end-to-end.** La Function deshabilita/rehabilita el agente con las acciones nativas `POST /agents/{id}:disable` / `:enable` (`api-version=v1`), dejando `state=disabled`/`enabled`. Lo ejecuta la **identidad administrada**, **sin Global Admin**. Reversible y enforced por el servicio. Fallback automático a flag `metadata.blocked` (nueva versión preservando `definition`) si el entorno no expone las acciones de estado.
-  - **🔑 Rol necesario:** el data-plane de agentes (`Microsoft.CognitiveServices/*/agents/*`) **no** lo cubre `Azure AI Developer` por sí solo → devuelve `403 UserError: does not have permissions for Microsoft.CognitiveServices/accounts/AIServices/agents/read`. Hace falta además **`Cognitive Services User`** (o `Foundry User`/`Foundry Project Manager`) sobre `agent-verse-resource`. `deploy.ps1` ya concede ambos. Tras asignarlo, la propagación del plano de datos tarda 2-5 min.
-
-> **🔑 Nota sobre identidades de agente de Foundry (preview):** los agentes que
-> publicas en `agent-verse-project` (p. ej. `AgentVerseIntakeAgent`) se respaldan en
-> Entra con un objeto `servicePrincipal` de tipo **`agentIdentity` / `ServiceIdentity`**
-> (tu "agent ID" `39f26b00…` es justo ese objeto). Estas identidades **preview** están
-> más protegidas: deshabilitar su `accountEnabled` **requiere un Global Administrator**;
-> los permisos de aplicación (`Application.ReadWrite.All`) y el rol Cloud Application
-> Administrator son rechazados con `403`. Por eso, para **agentes de Foundry** el
-> "block" del Mecanismo B lo debe ejecutar un GA (o un flujo con credenciales de GA),
-> mientras que para **agentes clásicos (agent-builder)** respaldados por un SP normal,
-> la identidad administrada con `Application.ReadWrite.All` es suficiente (probado).
-
-> **🔑 Nota sobre el Mecanismo A y el Agent Service:** el proyecto usa la API nueva de
-> agentes (`/agents`, `api-version=v1`), donde un agente tiene un campo nativo `state`
-> (`enabled`/`disabled`) y versiones con `definition`. **No** admite el simple
-> `POST {metadata:{blocked:true}}` de la API estilo *assistants* (devuelve
-> `required: definition`). `foundry.py` se ha **reescrito** para esta API moderna:
-> el bloqueo primario usa las **acciones de estado nativas**
-> `POST /agents/{id}:disable` / `:enable`, que la **identidad administrada ejecuta sin
-> Global Admin** (a diferencia del Mecanismo B sobre la `agentIdentity` preview) y que
-> el servicio **enforcea** de verdad. Como respaldo, si esas acciones no existen
-> (`404`/`405`), publica una nueva versión con `metadata.blocked=true` **preservando la
-> `definition`** existente (flag advisory, a aplicar en gateway/cliente). Para agentes
-> de Foundry, el Mecanismo A es ahora el bloqueo autónomo recomendado; el Mecanismo B
-> queda como alternativa a nivel de identidad (requiere GA para estas identidades).
-
-> **⚠️ Nota de política del tenant (importante):** tu tenant **prohíbe la
-> autenticación por clave compartida en Storage** y **deshabilita el basic auth de
-> SCM**. Por eso el plan de **Consumo clásico (Y1) no funciona** (su content share
-> necesita claves). La solución desplegada usa **Flex Consumption** con storage por
-> **identidad administrada** (`AzureWebJobsStorage__accountName` +
-> `__credential=managedidentity`) y `allowSharedKeyAccess:false`.
+Infraestructura como código (Bicep) + scripts para desplegar **toda** la solución
+con permisos mínimos. La guía completa de despliegue está en el
+**[`README.md`](../README.md)** raíz; aquí solo se describe el contenido de esta
+carpeta.
 
 ## Contenido
 
 | Archivo | Qué hace |
 |---------|----------|
-| `main.bicep` | Storage (sin clave, por identidad) + Function App **Flex Consumption** (Python 3.11) + Managed Identity + roles de storage + App Settings |
-| `main.parameters.json` | Parámetros ya rellenos con tus valores reales (suscripción, RG de `agent-verse-resource`, endpoint del proyecto, `agentTargetMap`) |
-| `deploy.ps1` | Despliega el Bicep, asigna roles A y C, y publica el código (`func ... --python`) |
-| `grant-graph-permission.ps1` | Otorga el permiso de Graph del Mecanismo B (necesita Global Admin) |
+| `main.bicep` | Crea **todo** desde cero: cuenta Foundry (`AIServices`) + proyecto, storage (por identidad), Function App **Flex Consumption** (Python 3.11) + identidad administrada, Log Analytics + Application Insights, **Action Group** (webhook → `/api/budget-alert`) + **alerta métrica** (`TotalTokens`), y **todos los role assignments** (mecanismos A y C + storage). **No** crea modelo ni agente. |
+| `main.parameters.json` | Parámetros genéricos (placeholders `CHANGEME`, `agentTargetMap` vacío). Rellénalos con nombres únicos. |
+| `deploy.ps1` | `what-if` → despliega el Bicep → publica el código (`func ... --python`). |
+| `grant-graph-permission.ps1` | Concede el permiso de Graph del Mecanismo B (necesita **Global Admin**). |
 
-## Permisos que se conceden (mínimo privilegio)
+## Permisos que concede el Bicep (mínimo privilegio)
 
-| Mecanismo | Permiso | Ámbito | Lo concede |
-|-----------|---------|--------|------------|
-| A – Foundry | `Azure AI Developer` + `Cognitive Services User` | `agent-verse-resource` | `deploy.ps1` |
-| C – Etiqueta ARM | `Tag Contributor` | `agent-verse-resource` | `deploy.ps1` |
-| B – Graph | `Application.ReadWrite.All` | Todo el tenant (Graph) | `grant-graph-permission.ps1` (**Global Admin**) |
+| Mecanismo | Permiso | Ámbito |
+|-----------|---------|--------|
+| A – Foundry | `Azure AI Developer` + `Cognitive Services User` | cuenta Foundry |
+| C – Etiqueta ARM | `Tag Contributor` | cuenta Foundry |
+| Runtime | `Storage Blob Data Owner` + `Storage Queue Data Contributor` | storage |
+| B – Graph | `Application.ReadWrite.All` (**fuera del Bicep** → `grant-graph-permission.ps1`, Global Admin) | tenant (Graph) |
 
-## Prerrequisitos
+> **🔑 Mecanismo A:** `Azure AI Developer` por sí solo **no** cubre el data-plane de
+> agentes (`.../agents/*`) → `403`. Por eso el Bicep asigna **también**
+> `Cognitive Services User`. El bloqueo usa el **estado nativo** del agente
+> (`POST /agents/{id}:disable` / `:enable`, `api-version=v1`), *enforced* por el
+> servicio, ejecutado por la identidad administrada **sin Global Admin**.
 
-- `az login` con permisos para crear recursos y asignar roles.
-- Azure Functions Core Tools v4 (`func`) y Bicep (`az bicep`).
-- `deploy/main.parameters.json` ya está relleno con tus valores reales.
-
-## Pasos
-
-> Estos pasos **ya se han ejecutado** contra tu suscripción. Repítelos solo si
-> quieres recrear la infraestructura desde cero (p. ej. en otro RG/suscripción).
+## Uso rápido
 
 ```powershell
 az login
-
-# 1) main.parameters.json ya está relleno (suscripción, RG, endpoint, agentTargetMap).
-
-# 2) Despliega infra (Flex Consumption) + roles A/C + publica el código.
-#    El publish usa 'func azure functionapp publish <app> --python' (obligatorio el
-#    flag --python en Flex sin local.settings.json).
+# 1) Edita main.parameters.json (nombres únicos globalmente).
+# 2) Valida sin desplegar:
+az deployment group what-if -g rg-block-agent `
+  --template-file deploy/main.bicep --parameters "@deploy/main.parameters.json"
+# 3) Despliega + publica:
 ./deploy/deploy.ps1 -ResourceGroup rg-block-agent -Location swedencentral
-
-# 3) (Pendiente — necesario para el Mecanismo B) Global Admin:
-./deploy/grant-graph-permission.ps1 -PrincipalId c22a5fbe-a0b6-41a4-965a-8b7ea16bbd2f
+# 4) (Opcional, Global Admin) Mecanismo B:
+./deploy/grant-graph-permission.ps1 -PrincipalId <objectId-de-la-identidad>
 ```
 
-Comprueba salud (ya responde OK):
+Tras desplegar, crea el modelo y el agente en el portal de Foundry y rellena
+`AGENT_TARGET_MAP` (ver [`README.md`](../README.md), sección "Pasos manuales en
+Foundry").
 
-```
-GET https://fa-block-agent-jykza1.azurewebsites.net/api/health
-```
+## Nota de política del tenant
 
-## Conectar el disparador de presupuesto
-
-1. Crea un **Action Group** con acción **Webhook** →
-   `https://fa-block-agent-jykza1.azurewebsites.net/api/budget-alert?code=<clave>`
-   (obtén la clave con `az functionapp keys list --name fa-block-agent-jykza1 --resource-group rg-block-agent --query "functionKeys.default" -o tsv`), con el
-   **esquema de alerta común** activado.
-2. Crea un **presupuesto** en Cost Management sobre `agent-verse-resource` (o su
-   RG). Nómbralo `budget-<agentId>` para transportar el id del agente.
-3. Añade el Action Group a las condiciones del presupuesto (p. ej. 90% / 100%).
-
----
-
-## Cómo se lleva a cabo cada prueba sobre la Function desplegada
-
-Estas son las comprobaciones que se ejecutan **una vez desplegada** (además de la
-suite offline de `TESTING.md`, que no necesita Azure). Cada prueba describe la
-acción y **qué se verifica**, no solo el comando.
-
-### Prueba D1 — Salud del servicio
-- **Acción:** `GET /api/health`.
-- **Se verifica:** responde `200` con `{"status":"ok","mechanisms":["foundry","graph","tag"]}`. Confirma que el host arrancó y cargó los tres mecanismos.
-
-### Prueba D2 — Bloqueo real (los 3 mecanismos)
-- **Acción:** `POST /api/budget-alert` con `samples/simplified_block.json` (`mechanism:"all"`).
-- **Se verifica en el portal:**
-  - Foundry: el agente tiene `metadata.blocked=true`.
-  - Entra: el service principal queda con "Habilitado para inicio de sesión = No" (`accountEnabled=false`).
-  - Recurso: `agent-verse-resource` tiene la etiqueta `MS-AOAI-Feature-Assistants=Disabled`.
-  - Respuesta HTTP `200` y `allSucceeded=true`.
-
-### Prueba D3 — Desbloqueo (reversibilidad)
-- **Acción:** `POST /api/budget-alert` con `samples/simplified_unblock.json`.
-- **Se verifica:** los tres valores vuelven al estado previo (`blocked=false`, `accountEnabled=true`, etiqueta `Enabled`). Nada se ha borrado.
-
-### Prueba D4 — Mecanismo aislado
-- **Acción:** `POST /api/budget-alert` con `{"agentId":"...","mechanism":"graph","action":"block"}`.
-- **Se verifica:** en la respuesta `mechanisms:["graph"]` y solo cambia el service principal; Foundry y la etiqueta no se tocan.
-
-### Prueba D5 — Permisos (mínimo privilegio)
-- **Acción:** lanzar D2 justo **después** del paso 2 pero **antes** del paso 3 (sin el permiso de Graph).
-- **Se verifica:** respuesta `207` con `allSucceeded=false`; `foundry` y `tag` en `success=true`, y `graph` en `success=false` con un `detail` de autorización. Confirma que cada mecanismo depende de su propio rol.
-
-### Prueba D6 — Formato de alerta real
-- **Acción:** `POST /api/budget-alert` con `samples/common_alert.json` (Common Alert Schema).
-- **Se verifica:** el agente se resuelve desde `alertContext.AgentId` / nombre de presupuesto y el bloqueo se aplica igual que en D2.
-
-### Prueba D7 — Trigger end-to-end
-- **Acción:** forzar el presupuesto (o bajar temporalmente el umbral) para que Cost Management dispare el Action Group.
-- **Se verifica:** sin intervención manual, el agente aparece bloqueado en el portal minutos después; en los logs de la Function (App Insights) se ve la invocación de `budget-alert`.
-
-### Prueba D8 — Casos de error
-- **Acción:** enviar `{}` (sin agente) y un `mechanism` inexistente.
-- **Se verifica:** `422` (no se pudo determinar el agente) y `400` (mecanismo inválido con la lista de válidos), respectivamente.
+Si tu tenant **prohíbe la autenticación por clave compartida en Storage** y
+**deshabilita el basic auth de SCM**, el plan de **Consumo clásico (Y1) no
+funciona** (su content share necesita claves). Por eso el Bicep usa **Flex
+Consumption** con storage por **identidad administrada**
+(`AzureWebJobsStorage__accountName` + `__credential=managedidentity`,
+`allowSharedKeyAccess:false`).

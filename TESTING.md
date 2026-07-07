@@ -13,7 +13,7 @@ esfuerzo:
 > Recordatorio de la evaluación de viabilidad: el botón "Bloquear" del Centro de
 > Administración de M365 **no tiene API pública**, así que probamos el
 > equivalente automatizado. Además, los presupuestos de Azure **no** se pueden
-> acotar a un único agente dentro de `agent-verse-resource` (solo a
+> acotar a un único agente dentro de la cuenta de Foundry (solo a
 > recurso/grupo de recursos/etiqueta).
 
 ---
@@ -60,7 +60,7 @@ Qué demuestra cada test:
 | Test | Qué valida |
 |------|------------|
 | `test_parse_common_alert` | Se parsea correctamente una alerta real (Common Alert Schema): `agentId`, gasto, presupuesto y acción. |
-| `test_block_then_unblock_all_mechanisms` | Los 3 mecanismos **bloquean** (metadata Foundry, `accountEnabled=false`, etiqueta `Disabled`) y luego el **unblock** restaura cada estado previo. |
+| `test_block_then_unblock_all_mechanisms` | Los 3 mecanismos **bloquean** (estado nativo de Foundry, `accountEnabled=false`, etiqueta `Disabled`) y luego el **unblock** restaura cada estado previo. |
 | `test_single_mechanism_selection` | Se puede ejecutar un único mecanismo (p. ej. solo `graph`). |
 
 ### Probar un solo mecanismo desde la terminal (offline)
@@ -184,13 +184,16 @@ func azure functionapp publish fa-block-agent
 az functionapp identity assign --name fa-block-agent --resource-group rg-agents
 ```
 
-Asigna a esa identidad (principio de mínimo privilegio):
+Los roles de los mecanismos A y C, además de los del storage, **ya los concede el
+Bicep** sobre la cuenta Foundry (mínimo privilegio):
 
-- **Mecanismo A (Foundry):** rol de plano de datos sobre `agent-verse-resource`
-  (p. ej. *Azure AI Developer* / *Cognitive Services User*).
-- **Mecanismo B (Graph):** permiso de aplicación `Application.ReadWrite.All`.
-- **Mecanismo C (etiqueta):** `Microsoft.Resources/tags/write` sobre el recurso
-  (p. ej. *Tag Contributor*).
+- **Mecanismo A (Foundry):** `Azure AI Developer` **+** `Cognitive Services User`
+  sobre la cuenta Foundry. `Azure AI Developer` por sí solo **no** cubre el
+  data-plane de agentes (`.../agents/*`) → da `403`; por eso hace falta también
+  `Cognitive Services User`. Tras asignarlos, el plano de datos tarda 2-5 min.
+- **Mecanismo B (Graph):** permiso de aplicación `Application.ReadWrite.All`
+  (fuera del Bicep, lo concede `grant-graph-permission.ps1` — necesita Global Admin).
+- **Mecanismo C (etiqueta):** `Tag Contributor` sobre la cuenta Foundry.
 
 ### 3.3 Configurar los App Settings
 
@@ -200,20 +203,18 @@ Identity).
 
 ### 3.4 Conectar la alerta de presupuesto
 
-1. Crea un **Action Group** con una acción **Webhook** apuntando a
-   `https://fa-block-agent.azurewebsites.net/api/budget-alert?code=<clave>` y
-   activa el **esquema de alerta común**.
-2. Crea un **presupuesto** en Cost Management sobre `agent-verse-resource` (o su
-   grupo de recursos). Nómbralo `budget-<agentId>` para transportar el id del
-   agente.
-3. Añade el Action Group a las condiciones del presupuesto (p. ej. 90% y 100%).
+El **Action Group** y la **alerta métrica** (`TotalTokens` sobre la cuenta Foundry)
+**ya los crea el Bicep**, conectados al endpoint `/api/budget-alert`. Solo tienes
+que ajustar el umbral (`budgetTokenThreshold`) si quieres otro valor. Si prefieres
+un presupuesto de coste real de Cost Management, créalo sobre la cuenta Foundry (o
+su RG), nómbralo `budget-<agentId>` y apúntalo al mismo Action Group.
 
 ### 3.5 Verificar el resultado en el portal
 
-- **Foundry:** el agente tiene `metadata.blocked=true`.
+- **Foundry:** el agente tiene `state=disabled` (bloqueo por estado nativo).
 - **Graph/Entra:** el service principal aparece con "Habilitado para que los
   usuarios inicien sesión = No" (`accountEnabled=false`).
-- **Etiqueta:** el recurso `agent-verse-resource` tiene
+- **Etiqueta:** la cuenta Foundry tiene
   `MS-AOAI-Feature-Assistants=Disabled`.
 
 Para revertir, reenvía la alerta con `"action": "unblock"`.
@@ -238,4 +239,4 @@ Para revertir, reenvía la alerta con `"action": "unblock"`.
 | `401/403` en un mecanismo | Faltan permisos de la identidad | Revisa los roles del apartado 3.2 |
 | `422 no agent id` | La alerta no lleva el id | Usa `agentId`, `alertContext.AgentId` o nombra el presupuesto `budget-<agentId>` |
 | `allSucceeded=false` (`207`) | Un mecanismo falló pero otros no | Mira el campo `results[].detail` de ese mecanismo |
-| El agente sigue funcionando tras el bloqueo Foundry | El flag `metadata.blocked` lo debe aplicar el gateway/cliente | Es esperado: el mecanismo A marca; la aplicación efectiva la hace APIM/cliente |
+| El agente sigue respondiendo tras el bloqueo Foundry | Falta el rol `Cognitive Services User` (la acción nativa da `403`) o el plano de datos aún no propagó | Asigna `Cognitive Services User` sobre la cuenta Foundry y espera 2-5 min; comprueba `state=disabled` |

@@ -1,8 +1,8 @@
 """Mechanism A - Azure AI Foundry Agent Service REST API (modern /agents API).
 
-Blocks an agent on ``agent-verse-resource`` **non-destructively and reversibly**.
+Blocks an agent on the target Foundry account **non-destructively and reversibly**.
 
-Foundry agents published in ``agent-verse-project`` live in the modern **Foundry
+Foundry agents published in a Foundry project live in the modern **Foundry
 Agent Service** (persistent agents at ``/agents`` with ``api-version=v1``). Each
 agent has a first-class ``state`` field (``enabled`` / ``disabled``) and versions
 carrying a full ``definition`` object.

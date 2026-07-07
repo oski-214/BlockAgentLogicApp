@@ -1,7 +1,7 @@
 """Mechanism C - ARM tag on the Foundry (Cognitive Services) account.
 
 Sets the documented feature tag ``MS-AOAI-Feature-Assistants=Disabled`` on
-``agent-verse-resource``, which blocks create/update/run operations for classic
+the target Foundry account, which blocks create/update/run operations for classic
 assistants on that account. This is deliberately **blunt**: it affects every
 classic assistant on the resource, not a single agent. Included only so the POC
 can compare it against the per-agent mechanisms.
