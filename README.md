@@ -1,139 +1,138 @@
-# Bloquear un agente al superar su presupuesto — Azure Function
+# Block an agent when its budget is exceeded — Azure Function
 
-Solución que **bloquea automáticamente un agente de Azure AI Foundry cuando se
-supera un presupuesto de tokens**, sin intervención manual. Es el equivalente
-automatizado del botón **"Block agent"** del Microsoft 365 Admin Center (que hoy
-**no** tiene API pública).
+A solution that **automatically blocks an Azure AI Foundry agent when a token
+budget is exceeded**, with no manual intervention. It is the automated equivalent
+of the Microsoft 365 Admin Center **"Block agent"** button (which today has **no**
+public API).
 
-Cuando el gasto/consumo de tokens de un agente supera el umbral, una alerta de
-Azure Monitor llama a una Azure Function que **deshabilita el agente** mediante
-uno de tres mecanismos reversibles.
+When an agent's token spend/usage crosses the threshold, an Azure Monitor alert
+calls an Azure Function that **disables the agent** through one of three reversible
+mechanisms.
 
-> 🎬 ¿Quieres ver los escenarios en acción? Ve a **[`DEMO.md`](DEMO.md)**.
-> Para probar la lógica sin desplegar nada, mira **[`TESTING.md`](TESTING.md)**.
-
----
-
-## 1. ¿Es posible automatizar el "Block agent" del Admin Center?
-
-- **No literalmente.** La acción *Block* de *Agents & connectors* del Admin
-  Center **no tiene API pública documentada**. El registro unificado **Agent 365**
-  está en preview y no es una superficie de automatización estable.
-- **Sí es posible un bloqueo equivalente y automatizado**, que es lo que
-  implementa este repo.
-- **Granularidad del presupuesto:** los presupuestos de *Cost Management* se
-  fijan a suscripción / grupo de recursos / recurso / etiqueta, **no a un agente
-  concreto**. Por eso aquí usamos una **alerta métrica sobre `TotalTokens`** de la
-  cuenta de Foundry (más cercana al consumo real del agente). Para presupuestos
-  estrictamente por-agente haría falta medición de tokens por agente
-  (App Insights / Log Analytics) — queda como trabajo futuro.
+> 🎬 Want to see the scenarios in action? Go to **[`DEMO.md`](DEMO.md)**.
+> To test the logic without deploying anything, see **[`TESTING.md`](TESTING.md)**.
 
 ---
 
-## 2. Los tres mecanismos (todos reversibles, nunca destructivos)
+## 1. Can the Admin Center "Block agent" button be automated?
 
-| # | Mecanismo | Bloqueo | Desbloqueo | Ámbito | Nota |
-|---|-----------|---------|------------|--------|------|
-| **A** | **Estado nativo de Foundry** | `POST /agents/{id}:disable` → `state=disabled` | `:enable` → `state=enabled` | un agente | **Recomendado**. Lo *enforcea* el propio servicio. La identidad administrada lo hace **sin Global Admin**. |
-| **B** | **Identidad de Entra** | `servicePrincipal accountEnabled=false` | `accountEnabled=true` | identidad del agente | Corta el acceso a nivel de identidad. Para identidades de agente de Foundry (preview) **requiere Global Admin**. |
-| **C** | **Etiqueta ARM** | etiqueta `MS-AOAI-Feature-Assistants=Disabled` | etiqueta `=Enabled` | **toda la cuenta** | Contundente: afecta a *todos* los assistants clásicos de la cuenta. Solo para comparar. |
+- **Not literally.** The Admin Center *Agents & connectors* *Block* action has
+  **no documented public API**. The unified **Agent 365** registry is in preview
+  and is not a stable automation surface.
+- **An equivalent, automated block IS possible**, which is what this repo
+  implements.
+- **Budget granularity:** *Cost Management* budgets are scoped to a subscription /
+  resource group / resource / tag, **not to a single agent**. That is why we use a
+  **metric alert on the Foundry account's `TotalTokens`** (closer to the agent's
+  actual usage). Strictly per-agent budgets would require per-agent token metering
+  (App Insights / Log Analytics) — noted as future work.
 
-> **Regla dura:** ningún mecanismo borra el agente, su identidad ni concesiones
-> de permisos. Cada bloqueo es reversible y guarda el estado previo.
+---
 
-### Mecanismo A: estado nativo (no es un flag de metadatos)
+## 2. The three mechanisms (all reversible, never destructive)
 
-Los agentes del **Foundry Agent Service** (API moderna `/agents`, `api-version=v1`)
-tienen un campo de primera clase `state` (`enabled`/`disabled`). El bloqueo
-primario usa las **acciones de estado nativas**:
+| # | Mechanism | Block | Unblock | Scope | Note |
+|---|-----------|-------|---------|-------|------|
+| **A** | **Foundry native state** | `POST /agents/{id}:disable` → `state=disabled` | `:enable` → `state=enabled` | single agent | **Recommended**. Enforced by the service itself. The managed identity does it **without Global Admin**. |
+| **B** | **Entra identity** | `servicePrincipal accountEnabled=false` | `accountEnabled=true` | agent identity | Cuts access at the identity level. For Foundry agent identities (preview) it **requires Global Admin**. |
+| **C** | **ARM tag** | tag `MS-AOAI-Feature-Assistants=Disabled` | tag `=Enabled` | **whole account** | Blunt: affects *all* classic assistants on the account. For comparison only. |
+
+> **Hard rule:** no mechanism ever deletes the agent, its identity, or permission
+> grants. Every block is reversible and captures the previous state.
+
+### Mechanism A: native state (not a metadata flag)
+
+Agents in the **Foundry Agent Service** (modern `/agents` API, `api-version=v1`)
+have a first-class `state` field (`enabled`/`disabled`). The primary block uses the
+**native state actions**:
 
 ```
 POST {project-endpoint}/agents/{id}:disable?api-version=v1   → state = "disabled"
 POST {project-endpoint}/agents/{id}:enable?api-version=v1    → state = "enabled"
 ```
 
-Si el entorno apuntara a una API antigua sin estas acciones (`404`/`405`), hay un
-**fallback** que publica una nueva versión con `metadata.blocked=true`
-**preservando la `definition`** (la API moderna rechaza actualizaciones solo de
-metadatos con `400 required: definition`). Ese flag es advisory (debe aplicarlo un
-gateway/cliente); el camino primario y probado es el estado nativo.
+If the environment targeted an older API without these actions (`404`/`405`), there
+is a **fallback** that publishes a new version with `metadata.blocked=true`
+**preserving the `definition`** (the modern API rejects metadata-only updates with
+`400 required: definition`). That flag is advisory (a gateway/client must enforce
+it); the primary, tested path is the native state.
 
-### ¿Assistant clásico o New Agent? Cómo distinguirlos
+### Classic Assistant or New Agent? How to tell them apart
 
-| | **Assistant clásico** | **New Agent (Agent Service)** |
+| | **Classic Assistant** | **New Agent (Agent Service)** |
 |--|----------------------|-------------------------------|
-| API | `/assistants` (estilo OpenAI Assistants) | `/agents` con `api-version=v1` |
-| Estado | no tiene `state`; solo `metadata` | tiene `state` (`enabled`/`disabled`) y `versions` con `definition` |
-| Bloqueo A | flag `metadata.blocked` (advisory) | acción nativa `:disable`/`:enable` (enforced) |
-| Identidad Entra | service principal normal | `servicePrincipal` tipo `agentIdentity` (preview, más protegido) |
+| API | `/assistants` (OpenAI Assistants style) | `/agents` with `api-version=v1` |
+| State | no `state`; only `metadata` | has `state` (`enabled`/`disabled`) and `versions` with `definition` |
+| Block A | `metadata.blocked` flag (advisory) | native `:disable`/`:enable` action (enforced) |
+| Entra identity | regular service principal | `servicePrincipal` of type `agentIdentity` (preview, more protected) |
 
-Regla rápida: **si `GET /agents/{id}?api-version=v1` devuelve `state` y `versions`,
-es un New Agent**. Si solo existe bajo `/assistants` y no tiene `state`, es clásico.
+Quick rule: **if `GET /agents/{id}?api-version=v1` returns `state` and `versions`,
+it is a New Agent**. If it only exists under `/assistants` and has no `state`, it is
+classic.
 
 ---
 
-## 3. Arquitectura
+## 3. Architecture
 
 ```
-Alerta métrica de Azure Monitor  (scope: cuenta Foundry, métrica TotalTokens)
-        │  se supera el umbral
+Azure Monitor metric alert  (scope: Foundry account, metric TotalTokens)
+        │  threshold exceeded
         ▼
    Action Group (webhook, common alert schema)
-        │  JSON de la alerta
+        │  alert JSON
         ▼
-   Azure Function   POST /api/budget-alert   (este repo)
-        │  parsea alerta → resuelve agente → despacha
-        ├─ A) Foundry REST   (:disable / :enable)   ← recomendado
+   Azure Function   POST /api/budget-alert   (this repo)
+        │  parse alert → resolve agent → dispatch
+        ├─ A) Foundry REST   (:disable / :enable)   ← recommended
         ├─ B) Entra Graph     (accountEnabled=false)
         └─ C) ARM tag         (MS-AOAI-Feature-Assistants=Disabled)
 ```
 
-La Function usa su **identidad administrada (system-assigned)** para pedir tokens
-y llamar a cada API. No hay secretos en el código.
+The Function uses its **system-assigned managed identity** to request tokens and
+call each API. No secrets live in the code.
 
 ---
 
-## 4. Qué despliega el Bicep (todo desde cero)
+## 4. What the Bicep deploys (everything from scratch)
 
-`deploy/main.bicep` crea **toda** la infraestructura de forma genérica y
-autocontenida:
+`deploy/main.bicep` creates **all** the infrastructure, generic and self-contained:
 
-| Recurso | Para qué |
-|---------|----------|
-| **Cuenta Azure AI Foundry** (`Microsoft.CognitiveServices/accounts`, kind `AIServices`) + **proyecto** | Aloja los agentes. `allowProjectManagement` + subdominio para el endpoint `<nombre>.services.ai.azure.com`. **No** despliega modelo ni agente (eso lo haces tú). |
-| **Storage** (sin clave compartida, por identidad) | Paquete de despliegue + estado del runtime |
-| **Plan Flex Consumption + Function App (Python 3.11)** + **identidad administrada** | Ejecuta la lógica de bloqueo |
-| **Log Analytics + Application Insights** | Trazas/telemetría de la Function |
-| **Action Group** (webhook → `/api/budget-alert`, common alert schema) | Puente alerta → Function |
-| **Alerta métrica** (`TotalTokens` sobre la cuenta Foundry) | Dispara el bloqueo al superar el umbral |
-| **Role assignments** (mecanismos A y C + storage) | Permisos mínimos, ya en la plantilla |
+| Resource | Purpose |
+|----------|---------|
+| **Azure AI Foundry account** (`Microsoft.CognitiveServices/accounts`, kind `AIServices`) + **project** | Hosts the agents. `allowProjectManagement` + subdomain for the `<name>.services.ai.azure.com` endpoint. It does **not** deploy a model or an agent (you do that). |
+| **Storage** (no shared key, identity-based) | Deployment package + runtime state |
+| **Flex Consumption plan + Function App (Python 3.11)** + **managed identity** | Runs the blocking logic |
+| **Log Analytics + Application Insights** | Function traces/telemetry |
+| **Action Group** (webhook → `/api/budget-alert`, common alert schema) | Bridges alert → Function |
+| **Metric alert** (`TotalTokens` on the Foundry account) | Fires the block when the threshold is exceeded |
+| **Role assignments** (mechanisms A and C + storage) | Least privilege, already in the template |
 
-> El **Mecanismo B (Graph `Application.ReadWrite.All`)** queda **fuera** del Bicep:
-> requiere consentimiento de un **Global Admin** → se concede con
+> **Mechanism B (Graph `Application.ReadWrite.All`)** is **out** of the Bicep: it
+> needs **Global Admin** consent → granted with
 > `deploy/grant-graph-permission.ps1`.
 
 ---
 
-## 5. Prerrequisitos
+## 5. Prerequisites
 
-- `az login` con permisos para crear recursos y **asignar roles**.
+- `az login` with rights to create resources and **assign roles**.
 - [Azure Functions Core Tools v4](https://learn.microsoft.com/azure/azure-functions/functions-run-local) (`func`).
 - Bicep (`az bicep`).
 
 ---
 
-## 6. Despliegue
+## 6. Deployment
 
-### 6.1 Rellena los parámetros
+### 6.1 Fill in the parameters
 
-Edita `deploy/main.parameters.json` con **nombres únicos globalmente** (Function
-App, storage y cuenta Foundry deben ser únicos):
+Edit `deploy/main.parameters.json` with **globally unique names** (Function App,
+storage, and Foundry account must be unique):
 
 ```jsonc
 {
-  "functionAppName":    { "value": "fa-blockagent-miorg" },
-  "storageAccountName": { "value": "stblkagentmiorg" },
-  "foundryAccountName": { "value": "aif-blockagent-miorg" },
+  "functionAppName":    { "value": "fa-blockagent-myorg" },
+  "storageAccountName": { "value": "stblkagentmyorg" },
+  "foundryAccountName": { "value": "aif-blockagent-myorg" },
   "foundryProjectName": { "value": "block-agent-project" },
   "foundryApiVersion":  { "value": "v1" },
   "agentTargetMap":     { "value": "{}" },
@@ -142,9 +141,9 @@ App, storage y cuenta Foundry deben ser únicos):
 }
 ```
 
-`agentTargetMap` empieza **vacío** (`{}`): lo rellenarás tras crear el agente.
+`agentTargetMap` starts **empty** (`{}`): you fill it in after creating the agent.
 
-### 6.2 Valida con what-if (no despliega nada)
+### 6.2 Validate with what-if (deploys nothing)
 
 ```powershell
 az group create --name rg-block-agent --location swedencentral
@@ -155,49 +154,49 @@ az deployment group what-if `
   --parameters "@deploy/main.parameters.json"
 ```
 
-Revisa que la lista de recursos a crear es la esperada.
+Check that the list of resources to create matches expectations.
 
-### 6.3 Despliega y publica el código
+### 6.3 Deploy and publish the code
 
 ```powershell
 ./deploy/deploy.ps1 -ResourceGroup rg-block-agent -Location swedencentral
 ```
 
-El script despliega el Bicep (infra + roles) y publica el código Python
-(`func azure functionapp publish <app> --python`). Comprueba salud:
+The script deploys the Bicep (infra + roles) and publishes the Python code
+(`func azure functionapp publish <app> --python`). Health check:
 
 ```
 GET https://<functionAppName>.azurewebsites.net/api/health
 → {"status":"ok","mechanisms":["foundry","graph","tag"]}
 ```
 
-### 6.4 (Opcional) Mecanismo B — consentimiento de Graph
+### 6.4 (Optional) Mechanism B — Graph consent
 
 ```powershell
-./deploy/grant-graph-permission.ps1 -PrincipalId <objectId-de-la-identidad>
+./deploy/grant-graph-permission.ps1 -PrincipalId <managed-identity-objectId>
 ```
 
-Necesita **Global Admin**. El `objectId` sale de los outputs del despliegue
+Requires **Global Admin**. The `objectId` comes from the deployment outputs
 (`managedIdentityPrincipalId`).
 
 ---
 
-## 7. Pasos manuales en Foundry (después de desplegar)
+## 7. Manual steps in Foundry (after deploying)
 
-El Bicep crea la **cuenta y el proyecto** de Foundry, pero **no** el modelo ni el
-agente. Créalos tú en el portal de Foundry:
+The Bicep creates the Foundry **account and project**, but **not** the model or the
+agent. Create them in the Foundry portal:
 
-1. **Despliega un modelo** en la cuenta de Foundry (p. ej. `gpt-4o-mini`).
-2. **Crea un agente** en el proyecto usando ese modelo.
-3. **Copia el agent ID** del agente.
-4. **Rellena `AGENT_TARGET_MAP`** para mapear el id que llega en la alerta al
-   agente de Foundry, y aplícalo en la Function App:
+1. **Deploy a model** in the Foundry account (e.g. `gpt-4o-mini`).
+2. **Create an agent** in the project using that model.
+3. **Copy the agent ID**.
+4. **Fill in `AGENT_TARGET_MAP`** to map the id that arrives in the alert to the
+   Foundry agent, and apply it to the Function App:
 
    ```jsonc
    {
      "<AGENT_ID>": {
        "foundry_agent_id": "<AGENT_ID>",
-       "service_principal_id": "<opcional, solo Mecanismo B>"
+       "service_principal_id": "<optional, mechanism B only>"
      }
    }
    ```
@@ -205,164 +204,164 @@ agente. Créalos tú en el portal de Foundry:
    ```powershell
    az functionapp config appsettings set `
      --name <functionAppName> --resource-group rg-block-agent `
-     --settings AGENT_TARGET_MAP='<json-en-una-linea>'
+     --settings AGENT_TARGET_MAP='<one-line-json>'
    ```
 
-   > Si no mapeas nada, la Function asume que el id de la alerta **es** el
-   > `foundry_agent_id` (fallback en `config.py`).
+   > If you map nothing, the Function assumes the alert's id **is** the
+   > `foundry_agent_id` (fallback in `config.py`).
 
-5. **Ajusta el presupuesto/alerta.** La alerta métrica `budget-<foundryAccountName>`
-   ya existe (creada por el Bicep). Cambia el umbral con `budgetTokenThreshold` o
-   directamente en el portal si quieres otro valor para la demo.
+5. **Adjust the budget/alert.** The metric alert `budget-<foundryAccountName>`
+   already exists (created by the Bicep). Change the threshold with
+   `budgetTokenThreshold` or directly in the portal for another demo value.
 
 ---
 
-## 8. Cómo funciona todo (permisos y comunicación)
+## 8. How it all works (permissions and communication)
 
-### 8.1 Flujo de un bloqueo
+### 8.1 Flow of a block
 
-1. El consumo de tokens supera el umbral → la **alerta métrica** se dispara.
-2. La alerta invoca el **Action Group** → webhook `POST /api/budget-alert` (con
-   *common alert schema*).
-3. La Function parsea la alerta, resuelve el agente (`AGENT_TARGET_MAP` /
-   `alertContext.AgentId` / nombre `budget-<agentId>`) y **despacha** al mecanismo
-   (por defecto `DEFAULT_BLOCK_MECHANISM=foundry`).
-4. El mecanismo pide un **token** con la identidad administrada y llama a la API
-   correspondiente. El agente queda `disabled`.
+1. Token usage exceeds the threshold → the **metric alert** fires.
+2. The alert invokes the **Action Group** → webhook `POST /api/budget-alert` (with
+   the *common alert schema*).
+3. The Function parses the alert, resolves the agent (`AGENT_TARGET_MAP` /
+   `alertContext.AgentId` / a budget named `budget-<agentId>`) and **dispatches** to
+   the mechanism (by default `DEFAULT_BLOCK_MECHANISM=foundry`).
+4. The mechanism requests a **token** with the managed identity and calls the
+   relevant API. The agent ends up `disabled`.
 
-### 8.2 Permisos (mínimo privilegio)
+### 8.2 Permissions (least privilege)
 
-| Mecanismo | Permiso | Ámbito | Lo concede |
-|-----------|---------|--------|------------|
-| A – Foundry | `Azure AI Developer` **+** `Cognitive Services User` | cuenta Foundry | Bicep |
-| C – Etiqueta ARM | `Tag Contributor` | cuenta Foundry | Bicep |
+| Mechanism | Permission | Scope | Granted by |
+|-----------|------------|-------|------------|
+| A – Foundry | `Azure AI Developer` **+** `Cognitive Services User` | Foundry account | Bicep |
+| C – ARM tag | `Tag Contributor` | Foundry account | Bicep |
 | B – Graph | `Application.ReadWrite.All` | tenant (Graph) | `grant-graph-permission.ps1` (**Global Admin**) |
 | Runtime | `Storage Blob Data Owner` + `Storage Queue Data Contributor` | storage | Bicep |
 
-> **🔑 Detalle clave del Mecanismo A:** `Azure AI Developer` por sí solo **no**
-> cubre el data-plane de agentes (`Microsoft.CognitiveServices/*/agents/*`) →
-> devuelve `403 does not have permissions for .../agents/read`. Por eso hace falta
-> **también `Cognitive Services User`**. Tras asignarlo, el plano de datos tarda
-> **2-5 min** en propagar.
+> **🔑 Key detail for Mechanism A:** `Azure AI Developer` alone does **not** cover
+> the agents data-plane (`Microsoft.CognitiveServices/*/agents/*`) → it returns
+> `403 does not have permissions for .../agents/read`. That is why
+> **`Cognitive Services User` is also required**. After assigning it, the data plane
+> takes **2–5 min** to propagate.
 
-Las 6 data-actions de agentes son: `agents/read`, `/write`, `/delete`,
+The 6 agent data-actions are: `agents/read`, `/write`, `/delete`,
 `/state/disable/action`, `/state/enable/action`,
-`/endpoints/UserIdentityImpersonation/action`. El Mecanismo A solo necesita
-`read` + `state/disable/action` + `state/enable/action` (+`write` para el fallback).
+`/endpoints/UserIdentityImpersonation/action`. Mechanism A only needs
+`read` + `state/disable/action` + `state/enable/action` (+`write` for the fallback).
 
-### 8.3 Flujo del token (identidad administrada → Entra → RBAC)
+### 8.3 Token flow (managed identity → Entra → RBAC)
 
-1. `DefaultAzureCredential` pide el token al **IMDS** (endpoint interno de
-   metadatos, `169.254.169.254`).
-2. IMDS habla con **Entra ID**, que devuelve un **JWT firmado** para la *audiencia*
-   del scope pedido:
+1. `DefaultAzureCredential` requests the token from **IMDS** (the internal instance
+   metadata endpoint, `169.254.169.254`).
+2. IMDS talks to **Entra ID**, which returns a **signed JWT** for the *audience* of
+   the requested scope:
    - Foundry: `https://ai.azure.com/.default`
-   - ARM (etiqueta): `https://management.azure.com/.default`
+   - ARM (tag): `https://management.azure.com/.default`
    - Graph: `https://graph.microsoft.com/.default`
-3. La Function hace el **POST directo por HTTPS** al endpoint del servicio con ese
-   token (no pasa por la identidad).
-4. **Azure RBAC se evalúa en el recurso, por llamada** (no viaja en el token): ARM
-   comprueba si la identidad tiene el data-action necesario. Por eso un fallo de
-   rol es un `403` del recurso, no un problema del token. (Los *app roles* de Graph
-   sí van dentro del token.)
+3. The Function makes the **direct HTTPS POST** to the service endpoint with that
+   token (it does not go "through the identity").
+4. **Azure RBAC is evaluated at the resource, per call** (it does not travel in the
+   token): ARM checks whether the identity has the required data-action. That is why
+   a role failure is a `403` from the resource, not a token problem. (Graph *app
+   roles* do travel inside the token.)
 
-> **Mecanismo B** deshabilita la **identidad de Entra** del agente, no Foundry en
-> sí: si el agente fuera un assistant clásico respaldado por un SP normal, poner
-> `accountEnabled=false` le corta el inicio de sesión y, por tanto, el acceso.
+> **Mechanism B** disables the agent's **Entra identity**, not Foundry itself: if
+> the agent were a classic assistant backed by a regular SP, setting
+> `accountEnabled=false` cuts its sign-in and therefore its access.
 
 ---
 
-## 9. Endpoints y payloads
+## 9. Endpoints and payloads
 
-| Método | Ruta | Auth | Propósito |
-|--------|------|------|-----------|
-| `POST` | `/api/budget-alert` | function key | Bloquea/desbloquea según el payload |
-| `GET`  | `/api/health` | anónima | Liveness + lista de mecanismos |
+| Method | Route | Auth | Purpose |
+|--------|-------|------|---------|
+| `POST` | `/api/budget-alert` | function key | Block/unblock based on the payload |
+| `GET`  | `/api/health` | anonymous | Liveness + list of mechanisms |
 
-Payload simplificado (pruebas manuales, ver `samples/simplified_block.json`):
+Simplified payload (manual testing, see `samples/simplified_block.json`):
 
 ```json
 { "agentId": "<AGENT_ID>", "spend": 128.55, "budget": 100,
   "action": "block", "mechanism": "foundry" }
 ```
 
-- `action`: `block` (por defecto) o `unblock`.
-- `mechanism`: `foundry` | `graph` | `tag` | `all` (por defecto
+- `action`: `block` (default) or `unblock`.
+- `mechanism`: `foundry` | `graph` | `tag` | `all` (defaults to
   `DEFAULT_BLOCK_MECHANISM`).
-- Resolución del agente: campo `agentId` → `alertContext.AgentId` → presupuesto
-  llamado `budget-<agentId>`.
+- Agent resolution: `agentId` field → `alertContext.AgentId` → a budget named
+  `budget-<agentId>`.
 
-Formato real: *Common Alert Schema*, ver `samples/common_alert.json`.
+Real format: *Common Alert Schema*, see `samples/common_alert.json`.
 
 ---
 
-## 10. Configuración (App Settings)
+## 10. Configuration (App Settings)
 
-Ver `local.settings.json.example`. Ajustes clave:
+See `local.settings.json.example`. Key settings:
 
-| Ajuste | Propósito |
-|--------|-----------|
-| `AZURE_SUBSCRIPTION_ID`, `AZURE_RESOURCE_GROUP`, `FOUNDRY_ACCOUNT_NAME` | Localizan la cuenta Foundry (Mecanismo C) |
-| `FOUNDRY_PROJECT_ENDPOINT`, `FOUNDRY_API_VERSION` (`v1`) | Data-plane de Foundry (Mecanismo A) |
-| `GRAPH_SCOPE` | Audiencia de Graph (Mecanismo B) |
+| Setting | Purpose |
+|---------|---------|
+| `AZURE_SUBSCRIPTION_ID`, `AZURE_RESOURCE_GROUP`, `FOUNDRY_ACCOUNT_NAME` | Locate the Foundry account (Mechanism C) |
+| `FOUNDRY_PROJECT_ENDPOINT`, `FOUNDRY_API_VERSION` (`v1`) | Foundry data plane (Mechanism A) |
+| `GRAPH_SCOPE` | Graph audience (Mechanism B) |
 | `AGENT_TARGET_MAP` | JSON `agentId → { foundry_agent_id, service_principal_id }` |
-| `DEFAULT_BLOCK_MECHANISM` | Mecanismo por defecto si la alerta no lo especifica |
-| `AZURE_TENANT_ID/CLIENT_ID/CLIENT_SECRET` | **Solo dev local.** En Azure se usa la identidad administrada — déjalos vacíos. |
+| `DEFAULT_BLOCK_MECHANISM` | Default mechanism when the alert doesn't specify one |
+| `AZURE_TENANT_ID/CLIENT_ID/CLIENT_SECRET` | **Local dev only.** In Azure the managed identity is used — leave blank. |
 
-El Bicep rellena todos estos ajustes automáticamente (salvo `AGENT_TARGET_MAP`,
-que ajustas tras crear el agente).
+The Bicep fills in all of these settings automatically (except `AGENT_TARGET_MAP`,
+which you set after creating the agent).
 
 ---
 
-## 11. Ejecutar y probar en local
+## 11. Run and test locally
 
 ```powershell
 python -m venv .venv
 .venv\Scripts\python.exe -m pip install -r requirements.txt
 
-# Prueba offline: bloquea, verifica y comprueba que el desbloqueo restaura (sin Azure)
+# Offline test: blocks, verifies, and checks that unblock restores state (no Azure)
 .venv\Scripts\python.exe -m unittest discover -s tests
 ```
 
-Para levantar el host localmente necesitas Azure Functions Core Tools:
+To run the host locally you need Azure Functions Core Tools:
 
 ```powershell
-copy local.settings.json.example local.settings.json   # rellena los valores
+copy local.settings.json.example local.settings.json   # fill in the values
 func start
-# en otra shell:
+# in another shell:
 curl -X POST http://localhost:7071/api/budget-alert -H "Content-Type: application/json" -d "@samples/simplified_block.json"
 ```
 
 ---
 
-## 12. Desbloqueo
+## 12. Unblocking
 
-El bloqueo **nunca** se revierte solo (no hay temporizador; una alerta "Resolved"
-no rehabilita). Para desbloquear, envía el mismo payload con `"action": "unblock"`
-(ver `samples/simplified_unblock.json`) o, para el Mecanismo A, reactiva el
-`state` del agente desde el portal de Foundry. Cada mecanismo restaura el estado
-previo (`state=enabled`, `accountEnabled=true`, etiqueta `=Enabled`). Nada se borra.
+A block is **never** reverted automatically (there is no timer; a "Resolved" alert
+does not re-enable). To unblock, send the same payload with `"action": "unblock"`
+(see `samples/simplified_unblock.json`) or, for Mechanism A, re-enable the agent's
+`state` from the Foundry portal. Each mechanism restores the previous state
+(`state=enabled`, `accountEnabled=true`, tag `=Enabled`). Nothing is deleted.
 
 ---
 
-## 13. Estructura del repo
+## 13. Repo layout
 
 ```
-function_app.py             # Entrypoint Azure Functions v2 (rutas HTTP)
-host.json                   # Config del host
-requirements.txt            # Dependencias Python
-local.settings.json.example # Copia a local.settings.json para dev local
+function_app.py             # Azure Functions v2 entrypoint (HTTP routes)
+host.json                   # Host config
+requirements.txt            # Python dependencies
+local.settings.json.example # Copy to local.settings.json for local dev
 blockagent/
-  config.py                 # Config por entorno + mapeo agentId→targets
-  auth.py                   # Tokens de identidad administrada / app-registration
-  budget_alert.py           # Parsea common-alert-schema o payload simplificado
-  dispatcher.py             # Enruta alerta → mecanismo(s), block/unblock
+  config.py                 # Env-driven config + agentId→targets mapping
+  auth.py                   # Managed-identity / app-registration tokens
+  budget_alert.py           # Parses common-alert-schema or simplified payload
+  dispatcher.py             # Routes alert → mechanism(s), block/unblock
   mechanisms/
     base.py                 # BlockResult
-    foundry.py              # Mecanismo A (estado nativo)
-    graph.py                # Mecanismo B (identidad Entra)
-    arm_tag.py              # Mecanismo C (etiqueta ARM)
-samples/                    # Payloads de ejemplo
-tests/test_harness.py       # Prueba offline: block → verify → unblock restaura
-deploy/                     # Bicep + scripts (ver deploy/README.md)
+    foundry.py              # Mechanism A (native state)
+    graph.py                # Mechanism B (Entra identity)
+    arm_tag.py              # Mechanism C (ARM tag)
+samples/                    # Example payloads
+tests/test_harness.py       # Offline test: block → verify → unblock restores
+deploy/                     # Bicep + scripts (see deploy/README.md)
 ```
