@@ -6,12 +6,12 @@
 
     "//": "----- Azure / target resource -----",
     "AZURE_SUBSCRIPTION_ID": "00000000-0000-0000-0000-000000000000",
-    "AZURE_RESOURCE_GROUP": "rg-agents",
-    "FOUNDRY_ACCOUNT_NAME": "agent-verse-resource",
+    "AZURE_RESOURCE_GROUP": "rg-block-agent",
+    "FOUNDRY_ACCOUNT_NAME": "aif-blockagent-miorg",
 
     "//foundry": "----- Mechanism A: Foundry REST -----",
-    "FOUNDRY_PROJECT_ENDPOINT": "https://agent-verse-resource.services.ai.azure.com/api/projects/my-project",
-    "FOUNDRY_API_VERSION": "2025-05-01",
+    "FOUNDRY_PROJECT_ENDPOINT": "https://aif-blockagent-miorg.services.ai.azure.com/api/projects/block-agent-project",
+    "FOUNDRY_API_VERSION": "v1",
 
     "//graph": "----- Mechanism B: Entra Graph -----",
     "GRAPH_SCOPE": "https://graph.microsoft.com/.default",

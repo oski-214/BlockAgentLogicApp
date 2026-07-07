@@ -74,9 +74,9 @@ def load_config() -> Config:
     return Config(
         subscription_id=os.environ.get("AZURE_SUBSCRIPTION_ID", ""),
         resource_group=os.environ.get("AZURE_RESOURCE_GROUP", ""),
-        foundry_account_name=os.environ.get("FOUNDRY_ACCOUNT_NAME", "agent-verse-resource"),
+        foundry_account_name=os.environ.get("FOUNDRY_ACCOUNT_NAME", ""),
         foundry_project_endpoint=os.environ.get("FOUNDRY_PROJECT_ENDPOINT", ""),
-        foundry_api_version=os.environ.get("FOUNDRY_API_VERSION", "2025-05-01"),
+        foundry_api_version=os.environ.get("FOUNDRY_API_VERSION", "v1"),
         graph_scope=os.environ.get("GRAPH_SCOPE", "https://graph.microsoft.com/.default"),
         default_block_mechanism=os.environ.get("DEFAULT_BLOCK_MECHANISM", "foundry").lower(),
         tenant_id=os.environ.get("AZURE_TENANT_ID") or None,
