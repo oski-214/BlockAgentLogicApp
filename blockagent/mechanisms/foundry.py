@@ -53,10 +53,25 @@ def _params(config: Config) -> Dict[str, str]:
     return {"api-version": config.foundry_api_version}
 
 
+def _raise_with_body(resp: requests.Response) -> None:
+    """Like ``raise_for_status`` but include the response body in the message.
+
+    Foundry data-plane errors (e.g. ``403``) carry the real reason in the body
+    (missing role/action, wrong token audience, ...). The default requests
+    exception only shows the status code, which hides that detail.
+    """
+    if resp.status_code >= 400:
+        body = (resp.text or "").strip()
+        raise requests.HTTPError(
+            f"{resp.status_code} {resp.reason} for {resp.url} :: {body[:800]}",
+            response=resp,
+        )
+
+
 def _get_agent(config: Config, agent_id: str, headers: Dict[str, str]) -> Dict[str, Any]:
     url = f"{_base_url(config)}/agents/{agent_id}"
     resp = requests.get(url, headers=headers, params=_params(config), timeout=30)
-    resp.raise_for_status()
+    _raise_with_body(resp)
     return resp.json()
 
 
@@ -100,7 +115,7 @@ def _publish_metadata_version(
         json={"definition": definition, "metadata": metadata},
         timeout=30,
     )
-    resp.raise_for_status()
+    _raise_with_body(resp)
     return resp.json()
 
 
@@ -121,7 +136,7 @@ def _apply(config: Config, target: AgentTarget, block: bool, reason: str, creden
         # Older API surface without native state actions -> metadata-flag fallback.
         return _apply_metadata_fallback(config, agent_id, current, block, reason, headers)
 
-    resp.raise_for_status()
+    _raise_with_body(resp)
 
     after = _get_agent(config, agent_id, headers)
     new_state = after.get("state")

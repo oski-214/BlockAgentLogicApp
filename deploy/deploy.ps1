@@ -7,7 +7,7 @@
   Steps performed:
     1. Deploy infra (storage + Function App + managed identity) from main.bicep.
     2. Grant the Function App's managed identity:
-         - "Azure AI Developer" on agent-verse-resource   (mechanism A)
+         - "Azure AI Developer" + "Cognitive Services User" on agent-verse-resource (mechanism A)
          - "Tag Contributor"     on agent-verse-resource   (mechanism C)
     3. Publish the Python code with 'func azure functionapp publish'.
   Mechanism B (Graph Application.ReadWrite.All) needs Global Admin consent and is
@@ -47,10 +47,18 @@ Write-Host "    Function App: $functionAppName"
 Write-Host "    Identity:     $principalId"
 Write-Host "    Foundry res:  $foundryId"
 
-Write-Host "==> Assigning data-plane role (mechanism A: Azure AI Developer)" -ForegroundColor Cyan
+Write-Host "==> Assigning data-plane roles (mechanism A: Foundry Agent Service)" -ForegroundColor Cyan
+# "Azure AI Developer" alone is NOT enough for the modern /agents data plane:
+# the native :disable/:enable state actions require the
+# Microsoft.CognitiveServices/*/agents data-actions, which "Cognitive Services
+# User" grants. We assign both so mechanism A works end-to-end from the MI
+# (no Global Admin needed).
 az role assignment create `
   --assignee-object-id $principalId --assignee-principal-type ServicePrincipal `
   --role "Azure AI Developer" --scope $foundryId --only-show-errors | Out-Null
+az role assignment create `
+  --assignee-object-id $principalId --assignee-principal-type ServicePrincipal `
+  --role "Cognitive Services User" --scope $foundryId --only-show-errors | Out-Null
 
 Write-Host "==> Assigning tag role (mechanism C: Tag Contributor)" -ForegroundColor Cyan
 az role assignment create `
