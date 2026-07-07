@@ -1,57 +1,55 @@
-# Despliegue (`deploy/`)
+# Deployment (`deploy/`)
 
-Infraestructura como código (Bicep) + scripts para desplegar **toda** la solución
-con permisos mínimos. La guía completa de despliegue está en el
-**[`README.md`](../README.md)** raíz; aquí solo se describe el contenido de esta
-carpeta.
+Infrastructure as code (Bicep) + scripts to deploy the **whole** solution with
+least privilege. The full deployment guide is in the root
+**[`README.md`](../README.md)**; this file only describes the contents of this
+folder.
 
-## Contenido
+## Contents
 
-| Archivo | Qué hace |
-|---------|----------|
-| `main.bicep` | Crea **todo** desde cero: cuenta Foundry (`AIServices`) + proyecto, storage (por identidad), Function App **Flex Consumption** (Python 3.11) + identidad administrada, Log Analytics + Application Insights, **Action Group** (webhook → `/api/budget-alert`) + **alerta métrica** (`TotalTokens`), y **todos los role assignments** (mecanismos A y C + storage). **No** crea modelo ni agente. |
-| `main.parameters.json` | Parámetros genéricos (placeholders `CHANGEME`, `agentTargetMap` vacío). Rellénalos con nombres únicos. |
-| `deploy.ps1` | `what-if` → despliega el Bicep → publica el código (`func ... --python`). |
-| `grant-graph-permission.ps1` | Concede el permiso de Graph del Mecanismo B (necesita **Global Admin**). |
+| File | What it does |
+|------|--------------|
+| `main.bicep` | Creates **everything** from scratch: Foundry account (`AIServices`) + project, storage (identity-based), **Flex Consumption** Function App (Python 3.11) + managed identity, Log Analytics + Application Insights, **Action Group** (webhook → `/api/budget-alert`) + **metric alert** (`TotalTokens`), and **all role assignments** (mechanisms A and C + storage). It does **not** create a model or an agent. |
+| `main.parameters.json` | Generic parameters (`CHANGEME` placeholders, empty `agentTargetMap`). Fill in unique names. |
+| `deploy.ps1` | `what-if` → deploy the Bicep → publish the code (`func ... --python`). |
+| `grant-graph-permission.ps1` | Grants the Mechanism B Graph permission (needs **Global Admin**). |
 
-## Permisos que concede el Bicep (mínimo privilegio)
+## Permissions granted by the Bicep (least privilege)
 
-| Mecanismo | Permiso | Ámbito |
-|-----------|---------|--------|
-| A – Foundry | `Azure AI Developer` + `Cognitive Services User` | cuenta Foundry |
-| C – Etiqueta ARM | `Tag Contributor` | cuenta Foundry |
+| Mechanism | Permission | Scope |
+|-----------|------------|-------|
+| A – Foundry | `Azure AI Developer` + `Cognitive Services User` | Foundry account |
+| C – ARM tag | `Tag Contributor` | Foundry account |
 | Runtime | `Storage Blob Data Owner` + `Storage Queue Data Contributor` | storage |
-| B – Graph | `Application.ReadWrite.All` (**fuera del Bicep** → `grant-graph-permission.ps1`, Global Admin) | tenant (Graph) |
+| B – Graph | `Application.ReadWrite.All` (**outside the Bicep** → `grant-graph-permission.ps1`, Global Admin) | tenant (Graph) |
 
-> **🔑 Mecanismo A:** `Azure AI Developer` por sí solo **no** cubre el data-plane de
-> agentes (`.../agents/*`) → `403`. Por eso el Bicep asigna **también**
-> `Cognitive Services User`. El bloqueo usa el **estado nativo** del agente
-> (`POST /agents/{id}:disable` / `:enable`, `api-version=v1`), *enforced* por el
-> servicio, ejecutado por la identidad administrada **sin Global Admin**.
+> **🔑 Mechanism A:** `Azure AI Developer` alone does **not** cover the agents
+> data-plane (`.../agents/*`) → `403`. That is why the Bicep also assigns
+> `Cognitive Services User`. The block uses the agent's **native state**
+> (`POST /agents/{id}:disable` / `:enable`, `api-version=v1`), *enforced* by the
+> service, run by the managed identity **without Global Admin**.
 
-## Uso rápido
+## Quick usage
 
 ```powershell
 az login
-# 1) Edita main.parameters.json (nombres únicos globalmente).
-# 2) Valida sin desplegar:
+# 1) Edit main.parameters.json (globally unique names).
+# 2) Validate without deploying:
 az deployment group what-if -g rg-block-agent `
   --template-file deploy/main.bicep --parameters "@deploy/main.parameters.json"
-# 3) Despliega + publica:
+# 3) Deploy + publish:
 ./deploy/deploy.ps1 -ResourceGroup rg-block-agent -Location swedencentral
-# 4) (Opcional, Global Admin) Mecanismo B:
-./deploy/grant-graph-permission.ps1 -PrincipalId <objectId-de-la-identidad>
+# 4) (Optional, Global Admin) Mechanism B:
+./deploy/grant-graph-permission.ps1 -PrincipalId <managed-identity-objectId>
 ```
 
-Tras desplegar, crea el modelo y el agente en el portal de Foundry y rellena
-`AGENT_TARGET_MAP` (ver [`README.md`](../README.md), sección "Pasos manuales en
-Foundry").
+After deploying, create the model and the agent in the Foundry portal and fill in
+`AGENT_TARGET_MAP` (see [`README.md`](../README.md), "Manual steps in Foundry").
 
-## Nota de política del tenant
+## Tenant policy note
 
-Si tu tenant **prohíbe la autenticación por clave compartida en Storage** y
-**deshabilita el basic auth de SCM**, el plan de **Consumo clásico (Y1) no
-funciona** (su content share necesita claves). Por eso el Bicep usa **Flex
-Consumption** con storage por **identidad administrada**
-(`AzureWebJobsStorage__accountName` + `__credential=managedidentity`,
+If your tenant **forbids shared-key authentication on Storage** and **disables SCM
+basic auth**, the **classic Consumption (Y1) plan does not work** (its content share
+needs keys). That is why the Bicep uses **Flex Consumption** with identity-based
+storage (`AzureWebJobsStorage__accountName` + `__credential=managedidentity`,
 `allowSharedKeyAccess:false`).

@@ -1,50 +1,46 @@
-# Guía de pruebas (cómo testear cada mecanismo)
+# Testing guide (how to test each mechanism)
 
-Esta guía explica, paso a paso, cómo probar el POC de "bloquear agente cuando se
-supera el presupuesto" y comprobar que **cada uno de los tres mecanismos**
-funciona y es **reversible**. Hay tres niveles de prueba, de menos a más
-esfuerzo:
+This guide explains, step by step, how to test the "block agent when the budget is
+exceeded" POC and verify that **each of the three mechanisms** works and is
+**reversible**. There are three test levels, from least to most effort:
 
-1. **Prueba offline** — sin Azure, en segundos. Valida toda la lógica.
-2. **Prueba local con el host de Functions** — llamadas HTTP reales con `curl`.
-3. **Prueba end-to-end en Azure** — con recursos reales y una alerta de
-   presupuesto de verdad.
+1. **Offline test** — no Azure, in seconds. Validates all the logic.
+2. **Local test with the Functions host** — real HTTP calls with `curl`.
+3. **End-to-end test on Azure** — with real resources and a real budget alert.
 
-> Recordatorio de la evaluación de viabilidad: el botón "Bloquear" del Centro de
-> Administración de M365 **no tiene API pública**, así que probamos el
-> equivalente automatizado. Además, los presupuestos de Azure **no** se pueden
-> acotar a un único agente dentro de la cuenta de Foundry (solo a
-> recurso/grupo de recursos/etiqueta).
+> Feasibility reminder: the M365 Admin Center "Block" button has **no public API**,
+> so we test the automated equivalent. Also, Azure budgets **cannot** be scoped to a
+> single agent inside the Foundry account (only to resource / resource group / tag).
 
 ---
 
-## 0. Requisitos previos
+## 0. Prerequisites
 
 ```powershell
-# Desde la raíz del repo
+# From the repo root
 python -m venv .venv
 .venv\Scripts\python.exe -m pip install -r requirements.txt
 ```
 
-Para los niveles 2 y 3 necesitas además:
+For levels 2 and 3 you also need:
 
-- **Azure Functions Core Tools v4** (`func`) — para ejecutar el host local.
-- **Azure CLI** (`az`) — para crear/gestionar recursos y probar permisos.
+- **Azure Functions Core Tools v4** (`func`) — to run the local host.
+- **Azure CLI** (`az`) — to create/manage resources and test permissions.
 
 ---
 
-## 1. Prueba offline (recomendada para empezar)
+## 1. Offline test (recommended to start)
 
-No toca Azure: simula en memoria los tres planos (Foundry, Graph y ARM) y
-reproduce los `payloads` de ejemplo por el parser y el dispatcher reales.
-Verifica que un bloqueo se aplica y que el **desbloqueo restaura el estado
-previo**.
+Does not touch Azure: it simulates the three planes (Foundry, Graph and ARM) in
+memory and replays the example payloads through the real parser and dispatcher. It
+verifies that a block is applied and that the **unblock restores the previous
+state**.
 
 ```powershell
 .venv\Scripts\python.exe -m tests.test_harness
 ```
 
-Salida esperada:
+Expected output:
 
 ```
 test_block_then_unblock_all_mechanisms ... ok
@@ -55,15 +51,15 @@ Ran 3 tests in 0.0XXs
 OK
 ```
 
-Qué demuestra cada test:
+What each test proves:
 
-| Test | Qué valida |
-|------|------------|
-| `test_parse_common_alert` | Se parsea correctamente una alerta real (Common Alert Schema): `agentId`, gasto, presupuesto y acción. |
-| `test_block_then_unblock_all_mechanisms` | Los 3 mecanismos **bloquean** (estado nativo de Foundry, `accountEnabled=false`, etiqueta `Disabled`) y luego el **unblock** restaura cada estado previo. |
-| `test_single_mechanism_selection` | Se puede ejecutar un único mecanismo (p. ej. solo `graph`). |
+| Test | What it validates |
+|------|-------------------|
+| `test_parse_common_alert` | A real alert (Common Alert Schema) is parsed correctly: `agentId`, spend, budget and action. |
+| `test_block_then_unblock_all_mechanisms` | The 3 mechanisms **block** (Foundry native state, `accountEnabled=false`, tag `Disabled`) and then **unblock** restores each previous state. |
+| `test_single_mechanism_selection` | A single mechanism can be run (e.g. only `graph`). |
 
-### Probar un solo mecanismo desde la terminal (offline)
+### Run a single mechanism from the terminal (offline)
 
 ```powershell
 .venv\Scripts\python.exe -c "import tests.test_harness as t; import unittest; unittest.main(module=t, argv=['x','BlockAgentHarness.test_single_mechanism_selection'], exit=False)"
@@ -71,40 +67,40 @@ Qué demuestra cada test:
 
 ---
 
-## 2. Prueba local con el host de Azure Functions
+## 2. Local test with the Azure Functions host
 
-Ejecuta la Function de verdad y le mandas `payloads` con `curl`. Puedes hacerlo
-de dos formas según quieras (o no) tocar Azure.
+Runs the real Function and you send payloads with `curl`. You can do it two ways
+depending on whether you want to touch Azure.
 
-### 2.1 Preparar configuración
+### 2.1 Prepare configuration
 
 ```powershell
 copy local.settings.json.example local.settings.json
 ```
 
-Edita `local.settings.json`:
+Edit `local.settings.json`:
 
-- Para **solo probar el flujo HTTP + parsing + dispatch** sin credenciales
-  reales, no hace falta rellenar nada más (las llamadas a Azure fallarán de
-  forma controlada y verás el error por mecanismo en la respuesta).
-- Para **probar contra Azure real** desde tu máquina, rellena
-  `AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET` (app registration
-  de desarrollo) y el `AGENT_TARGET_MAP` con ids reales.
+- To **only test the HTTP flow + parsing + dispatch** without real credentials, you
+  don't need to fill anything else (the Azure calls fail in a controlled way and you
+  see the per-mechanism error in the response).
+- To **test against real Azure** from your machine, fill in `AZURE_TENANT_ID`,
+  `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET` (a dev app registration) and the
+  `AGENT_TARGET_MAP` with real ids.
 
-### 2.2 Arrancar el host
+### 2.2 Start the host
 
 ```powershell
 func start
 ```
 
-Comprueba que vive:
+Check it's alive:
 
 ```powershell
 curl http://localhost:7071/api/health
 # {"status":"ok","mechanisms":["foundry","graph","tag"]}
 ```
 
-### 2.3 Lanzar un bloqueo
+### 2.3 Send a block
 
 ```powershell
 curl -X POST http://localhost:7071/api/budget-alert `
@@ -112,7 +108,7 @@ curl -X POST http://localhost:7071/api/budget-alert `
   -d "@samples/simplified_block.json"
 ```
 
-Respuesta (resumen por mecanismo):
+Response (per-mechanism summary):
 
 ```json
 {
@@ -128,7 +124,7 @@ Respuesta (resumen por mecanismo):
 }
 ```
 
-### 2.4 Desbloquear (revertir)
+### 2.4 Unblock (revert)
 
 ```powershell
 curl -X POST http://localhost:7071/api/budget-alert `
@@ -136,9 +132,9 @@ curl -X POST http://localhost:7071/api/budget-alert `
   -d "@samples/simplified_unblock.json"
 ```
 
-### 2.5 Probar mecanismos por separado
+### 2.5 Test mechanisms individually
 
-Cambia el campo `mechanism` del cuerpo a `foundry`, `graph`, `tag` o `all`:
+Change the body's `mechanism` field to `foundry`, `graph`, `tag` or `all`:
 
 ```powershell
 curl -X POST http://localhost:7071/api/budget-alert `
@@ -146,7 +142,7 @@ curl -X POST http://localhost:7071/api/budget-alert `
   -d '{ "agentId": "asst_demo123", "mechanism": "graph", "action": "block" }'
 ```
 
-### 2.6 Probar el formato de alerta real (Common Alert Schema)
+### 2.6 Test the real alert format (Common Alert Schema)
 
 ```powershell
 curl -X POST http://localhost:7071/api/budget-alert `
@@ -154,89 +150,90 @@ curl -X POST http://localhost:7071/api/budget-alert `
   -d "@samples/common_alert.json"
 ```
 
-### 2.7 Casos de error que conviene probar
+### 2.7 Error cases worth testing
 
-| Caso | Cómo | Resultado esperado |
-|------|------|--------------------|
-| Sin `agentId` | Envía `{}` | `422` con mensaje de que no se pudo determinar el agente |
-| JSON inválido | Envía texto no-JSON | `400` "Request body must be valid JSON" |
-| Mecanismo desconocido | `"mechanism": "foo"` | `400` con la lista de mecanismos válidos |
-| Fallo parcial | Un mecanismo sin permisos | `207` y `allSucceeded=false`, con el error en ese mecanismo |
+| Case | How | Expected result |
+|------|-----|-----------------|
+| No `agentId` | Send `{}` | `422` with a message that the agent could not be determined |
+| Invalid JSON | Send non-JSON text | `400` "Request body must be valid JSON" |
+| Unknown mechanism | `"mechanism": "foo"` | `400` with the list of valid mechanisms |
+| Partial failure | A mechanism without permissions | `207` and `allSucceeded=false`, with the error on that mechanism |
 
 ---
 
-## 3. Prueba end-to-end en Azure (opcional, la más realista)
+## 3. End-to-end test on Azure (optional, the most realistic)
 
-### 3.1 Desplegar la Function
+### 3.1 Deploy the Function
+
+Use the Bicep (see [`README.md`](README.md) / [`deploy/README.md`](deploy/README.md))
+to create everything, or deploy manually:
 
 ```powershell
-# Crea el Function App (plan de consumo, runtime Python 3.11) y despliega
-az functionapp create --resource-group rg-agents --consumption-plan-location westeurope `
+# Create the Function App (consumption plan, Python 3.11 runtime) and deploy
+az functionapp create --resource-group rg-block-agent --consumption-plan-location swedencentral `
   --runtime python --runtime-version 3.11 --functions-version 4 `
   --name fa-block-agent --storage-account <storageaccount> --os-type Linux
 func azure functionapp publish fa-block-agent
 ```
 
-### 3.2 Identidad y permisos
+### 3.2 Identity and permissions
 
 ```powershell
-# Managed Identity de sistema
-az functionapp identity assign --name fa-block-agent --resource-group rg-agents
+# System-assigned managed identity
+az functionapp identity assign --name fa-block-agent --resource-group rg-block-agent
 ```
 
-Los roles de los mecanismos A y C, además de los del storage, **ya los concede el
-Bicep** sobre la cuenta Foundry (mínimo privilegio):
+The mechanism A and C roles, plus the storage ones, are **already granted by the
+Bicep** on the Foundry account (least privilege):
 
-- **Mecanismo A (Foundry):** `Azure AI Developer` **+** `Cognitive Services User`
-  sobre la cuenta Foundry. `Azure AI Developer` por sí solo **no** cubre el
-  data-plane de agentes (`.../agents/*`) → da `403`; por eso hace falta también
-  `Cognitive Services User`. Tras asignarlos, el plano de datos tarda 2-5 min.
-- **Mecanismo B (Graph):** permiso de aplicación `Application.ReadWrite.All`
-  (fuera del Bicep, lo concede `grant-graph-permission.ps1` — necesita Global Admin).
-- **Mecanismo C (etiqueta):** `Tag Contributor` sobre la cuenta Foundry.
+- **Mechanism A (Foundry):** `Azure AI Developer` **+** `Cognitive Services User`
+  on the Foundry account. `Azure AI Developer` alone does **not** cover the agents
+  data-plane (`.../agents/*`) → returns `403`; that is why `Cognitive Services User`
+  is also required. After assigning them, the data plane takes 2–5 min.
+- **Mechanism B (Graph):** application permission `Application.ReadWrite.All`
+  (outside the Bicep, granted by `grant-graph-permission.ps1` — needs Global Admin).
+- **Mechanism C (tag):** `Tag Contributor` on the Foundry account.
 
-### 3.3 Configurar los App Settings
+### 3.3 Configure the App Settings
 
-Sube las mismas claves de `local.settings.json.example` como *Application
-settings* (sin las de `AZURE_CLIENT_SECRET`: en Azure se usa la Managed
-Identity).
+Upload the same keys from `local.settings.json.example` as *Application settings*
+(without `AZURE_CLIENT_SECRET`: in Azure the managed identity is used).
 
-### 3.4 Conectar la alerta de presupuesto
+### 3.4 Wire up the budget alert
 
-El **Action Group** y la **alerta métrica** (`TotalTokens` sobre la cuenta Foundry)
-**ya los crea el Bicep**, conectados al endpoint `/api/budget-alert`. Solo tienes
-que ajustar el umbral (`budgetTokenThreshold`) si quieres otro valor. Si prefieres
-un presupuesto de coste real de Cost Management, créalo sobre la cuenta Foundry (o
-su RG), nómbralo `budget-<agentId>` y apúntalo al mismo Action Group.
+The **Action Group** and the **metric alert** (`TotalTokens` on the Foundry account)
+are **already created by the Bicep**, wired to the `/api/budget-alert` endpoint. You
+just need to adjust the threshold (`budgetTokenThreshold`) if you want another value.
+If you prefer a real Cost Management budget, create it on the Foundry account (or its
+RG), name it `budget-<agentId>` and point it at the same Action Group.
 
-### 3.5 Verificar el resultado en el portal
+### 3.5 Verify the result in the portal
 
-- **Foundry:** el agente tiene `state=disabled` (bloqueo por estado nativo).
-- **Graph/Entra:** el service principal aparece con "Habilitado para que los
-  usuarios inicien sesión = No" (`accountEnabled=false`).
-- **Etiqueta:** la cuenta Foundry tiene
-  `MS-AOAI-Feature-Assistants=Disabled`.
+- **Foundry:** the agent has `state=disabled` (native-state block).
+- **Graph/Entra:** the service principal shows "Enabled for users to sign in = No"
+  (`accountEnabled=false`).
+- **Tag:** the Foundry account has `MS-AOAI-Feature-Assistants=Disabled`.
 
-Para revertir, reenvía la alerta con `"action": "unblock"`.
+To revert, resend the alert with `"action": "unblock"`.
 
 ---
 
-## 4. Tabla resumen: qué prueba cada nivel
+## 4. Summary table: what each level tests
 
-| Nivel | Toca Azure | Qué comprueba | Comando principal |
-|-------|-----------|---------------|-------------------|
-| 1. Offline | No | Parsing + dispatch + reversibilidad de los 3 mecanismos | `python -m tests.test_harness` |
-| 2. Host local | Opcional | Flujo HTTP real, códigos de estado, selección de mecanismo | `func start` + `curl` |
-| 3. Azure E2E | Sí | Bloqueo/desbloqueo real y trigger por presupuesto | `func azure functionapp publish` + alerta |
+| Level | Touches Azure | What it checks | Main command |
+|-------|---------------|----------------|--------------|
+| 1. Offline | No | Parsing + dispatch + reversibility of the 3 mechanisms | `python -m tests.test_harness` |
+| 2. Local host | Optional | Real HTTP flow, status codes, mechanism selection | `func start` + `curl` |
+| 3. Azure E2E | Yes | Real block/unblock and budget trigger | `func azure functionapp publish` + alert |
 
 ---
 
-## 5. Solución de problemas
+## 5. Troubleshooting
 
-| Síntoma | Causa probable | Solución |
-|---------|----------------|----------|
-| `ModuleNotFoundError` | venv sin dependencias | `pip install -r requirements.txt` |
-| `401/403` en un mecanismo | Faltan permisos de la identidad | Revisa los roles del apartado 3.2 |
-| `422 no agent id` | La alerta no lleva el id | Usa `agentId`, `alertContext.AgentId` o nombra el presupuesto `budget-<agentId>` |
-| `allSucceeded=false` (`207`) | Un mecanismo falló pero otros no | Mira el campo `results[].detail` de ese mecanismo |
-| El agente sigue respondiendo tras el bloqueo Foundry | Falta el rol `Cognitive Services User` (la acción nativa da `403`) o el plano de datos aún no propagó | Asigna `Cognitive Services User` sobre la cuenta Foundry y espera 2-5 min; comprueba `state=disabled` |
+| Symptom | Likely cause | Fix |
+|---------|--------------|-----|
+| `ModuleNotFoundError` | venv without dependencies | `pip install -r requirements.txt` |
+| `401/403` on a mechanism | Missing identity permissions | Review the roles in section 3.2 |
+| `422 no agent id` | The alert carries no id | Use `agentId`, `alertContext.AgentId` or name the budget `budget-<agentId>` |
+| `allSucceeded=false` (`207`) | One mechanism failed but others didn't | Check the `results[].detail` field of that mechanism |
+| The agent keeps responding after the Foundry block | Missing `Cognitive Services User` role (the native action returns `403`) or the data plane hasn't propagated yet | Assign `Cognitive Services User` on the Foundry account and wait 2–5 min; check `state=disabled` |

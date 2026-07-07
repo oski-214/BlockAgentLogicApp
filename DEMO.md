@@ -1,41 +1,42 @@
-# Demo — Bloquear un agente cuando se supera el presupuesto
+# Demo — Block an agent when its budget is exceeded
 
-Guía copy-paste para enseñar el flujo. Todo es **reversible y no destructivo**:
-cada bloqueo se puede deshacer y ningún recurso se borra.
+Copy-paste guide to showcase the flow. Everything is **reversible and
+non-destructive**: every block can be undone and no resource is deleted.
 
-> **En una frase:** cuando el consumo de tokens de un agente supera un umbral, una
-> alerta llama a esta Function y esta **deshabilita el agente**. Es el equivalente
-> automatizado del botón *"Block agent"* del Admin Center de M365 (sin API pública).
+> **In one sentence:** when an agent's token usage exceeds a threshold, an alert
+> calls this Function and it **disables the agent**. It is the automated equivalent
+> of the M365 Admin Center *"Block agent"* button (no public API).
 
-Asume que ya has desplegado la solución con el Bicep (ver [`README.md`](README.md)):
-cuenta y proyecto de Foundry, Function App, Action Group y alerta métrica ya existen.
+This assumes you already deployed the solution with the Bicep (see
+[`README.md`](README.md)): the Foundry account and project, Function App, Action
+Group, and metric alert already exist.
 
 ---
 
-## 0. Variables (rellena una sola vez)
+## 0. Variables (fill in once)
 
-Abre **PowerShell**, edita los valores `<...>` con los de **tu** despliegue y pega
-el bloque:
+Open **PowerShell**, edit the `<...>` values with those of **your** deployment, and
+paste the block:
 
 ```powershell
 az login
 
-# --- Rellena con tus valores ---
-$FunctionApp   = "<FUNCTION_APP>"          # p. ej. fa-blockagent-miorg
-$Rg            = "<RG>"                     # RG de la Function, p. ej. rg-block-agent
-$FoundryAcct   = "<FOUNDRY_ACCOUNT>"        # cuenta Foundry, p. ej. aif-blockagent-miorg
-$Project       = "<PROJECT>"               # proyecto, p. ej. block-agent-project
-$AgentId       = "<AGENT_ID>"              # agent ID que creaste en Foundry
+# --- Fill in with your values ---
+$FunctionApp   = "<FUNCTION_APP>"          # e.g. fa-blockagent-myorg
+$Rg            = "<RG>"                     # Function RG, e.g. rg-block-agent
+$FoundryAcct   = "<FOUNDRY_ACCOUNT>"        # Foundry account, e.g. aif-blockagent-myorg
+$Project       = "<PROJECT>"               # project, e.g. block-agent-project
+$AgentId       = "<AGENT_ID>"              # agent ID you created in Foundry
 $SubId         = "<SUBSCRIPTION_ID>"
 # --------------------------------
 
-# Clave de la Function y URL del endpoint
+# Function key and endpoint URL
 $key = az functionapp keys list --name $FunctionApp --resource-group $Rg `
   --query "functionKeys.default" -o tsv
-if (-not $key) { throw "No se pudo recuperar la function key" }
+if (-not $key) { throw "Could not retrieve the function key" }
 $Url = "https://$FunctionApp.azurewebsites.net/api/budget-alert?code=$key"
 
-# Endpoint data-plane del proyecto Foundry y resource id de la cuenta
+# Foundry project data-plane endpoint and account resource id
 $FoundryEp = "https://$FoundryAcct.services.ai.azure.com/api/projects/$Project"
 $Rid = "/subscriptions/$SubId/resourceGroups/$Rg/providers/Microsoft.CognitiveServices/accounts/$FoundryAcct"
 
@@ -43,7 +44,7 @@ $Rid = "/subscriptions/$SubId/resourceGroups/$Rg/providers/Microsoft.CognitiveSe
 "Foundry endpoint: $FoundryEp"
 ```
 
-Comprobación rápida de salud (el host está vivo y cargó los mecanismos):
+Quick health check (the host is alive and loaded the mechanisms):
 
 ```powershell
 Invoke-RestMethod -Uri "https://$FunctionApp.azurewebsites.net/api/health"
@@ -52,16 +53,16 @@ Invoke-RestMethod -Uri "https://$FunctionApp.azurewebsites.net/api/health"
 
 ---
 
-## 1. Preparación en Foundry (modelo + agente)
+## 1. Foundry preparation (model + agent)
 
-El Bicep crea la **cuenta y el proyecto** de Foundry, pero **no** el modelo ni el
-agente. Hazlo una vez en el portal:
+The Bicep creates the Foundry **account and project**, but **not** the model or the
+agent. Do this once in the portal:
 
-1. **Portal de Azure AI Foundry** → tu proyecto (`<PROJECT>`).
-2. **Despliega un modelo** (p. ej. `gpt-4o-mini`).
-3. **Crea un agente** con ese modelo.
-4. **Copia el agent ID** → es el valor de `$AgentId` de arriba.
-5. **Mapea el agente** en la Function (para que resuelva el id de la alerta):
+1. **Azure AI Foundry portal** → your project (`<PROJECT>`).
+2. **Deploy a model** (e.g. `gpt-4o-mini`).
+3. **Create an agent** with that model.
+4. **Copy the agent ID** → it is the `$AgentId` value above.
+5. **Map the agent** in the Function (so it resolves the alert's id):
 
    ```powershell
    $map = @{ $AgentId = @{ foundry_agent_id = $AgentId } } | ConvertTo-Json -Compress
@@ -69,35 +70,35 @@ agente. Hazlo una vez en el portal:
      --settings AGENT_TARGET_MAP=$map | Out-Null
    ```
 
-6. **Presupuesto/alerta:** la alerta métrica `budget-<FOUNDRY_ACCOUNT>` ya existe
-   (creada por el Bicep, `TotalTokens > umbral` sobre la cuenta Foundry) y está
-   conectada al Action Group → Function. No hay que crear nada más.
+6. **Budget/alert:** the metric alert `budget-<FOUNDRY_ACCOUNT>` already exists
+   (created by the Bicep, `TotalTokens > threshold` on the Foundry account) and is
+   wired to the Action Group → Function. Nothing else to create.
 
 ---
 
-## 2. ⭐ Escenario estrella — Trigger real de extremo a extremo
+## 2. ⭐ Star scenario — Real end-to-end trigger
 
-**El escenario que convence:** saturas el agente desde el playground y, a los pocos
-minutos, queda bloqueado **solo** — sin llamar a la Function a mano — igual que en
-producción cuando se dispara el presupuesto.
+**The convincing scenario:** you saturate the agent from the playground and, within
+a few minutes, it gets blocked **on its own** — without calling the Function by hand
+— exactly like production when the budget fires.
 
 ```text
-Playground de Foundry (saturas el agente con un prompt grande)
-        │  se disparan miles de TotalTokens
+Foundry playground (you saturate the agent with a large prompt)
+        │  thousands of TotalTokens are generated
         ▼
-Alerta métrica  budget-<FOUNDRY_ACCOUNT>  (TotalTokens > umbral, ventana 1 min)
+Metric alert  budget-<FOUNDRY_ACCOUNT>  (TotalTokens > threshold, 1-min window)
         │  monitorCondition = Fired
         ▼
-Action Group  (webhook, esquema común)
-        │  POST del payload de alerta
+Action Group  (webhook, common schema)
+        │  POST of the alert payload
         ▼
-Azure Function  →  mecanismo por defecto (foundry)  →  POST /agents/<AGENT_ID>:disable  →  state = "disabled"
+Azure Function  →  default mechanism (foundry)  →  POST /agents/<AGENT_ID>:disable  →  state = "disabled"
         │
         ▼
-Agente bloqueado automáticamente
+Agent blocked automatically
 ```
 
-### 2.1 Estado ANTES
+### 2.1 State BEFORE
 
 ```powershell
 $tok = az account get-access-token --scope "https://ai.azure.com/.default" --query accessToken -o tsv
@@ -106,28 +107,29 @@ Invoke-RestMethod -Uri "$FoundryEp/agents/$AgentId?api-version=v1" `
 # → state = enabled
 ```
 
-### 2.2 Saturar el agente desde el portal de Foundry
+### 2.2 Saturate the agent from the Foundry portal
 
-Abre el **playground** del agente y envía este **prompt de saturación** (genera
-miles de tokens, muy por encima del umbral). Si hace falta, mándalo 2–3 veces
-seguidas dentro de la misma ventana de 1 minuto:
+Open the agent's **playground** and send this **saturation prompt** (it generates
+thousands of tokens, well above the threshold). If needed, send it 2–3 times in a
+row within the same 1-minute window:
 
 ```text
-Escribe un ensayo técnico de al menos 2000 palabras que explique en profundidad,
-paso a paso y con ejemplos, la arquitectura completa de un sistema de bloqueo
-automático de agentes de IA por presupuesto en Azure: incluye Azure Functions,
-Azure Monitor, grupos de acciones, Cost Management, Microsoft Graph y ARM.
-Desarrolla cada sección con el máximo detalle posible, añade ventajas,
-inconvenientes, alternativas y un resumen final extenso. No omitas nada.
+Write a technical essay of at least 2000 words that explains in depth,
+step by step and with examples, the complete architecture of an automatic
+AI-agent budget-blocking system on Azure: include Azure Functions,
+Azure Monitor, action groups, Cost Management, Microsoft Graph and ARM.
+Develop each section in the greatest possible detail, add pros,
+cons, alternatives and an extensive final summary. Do not omit anything.
 ```
 
-### 2.3 Esperar a que salte la alerta (~1–5 min)
+### 2.3 Wait for the alert to fire (~1–5 min)
 
-Azure Monitor evalúa la métrica cada minuto. Cuando `TotalTokens` supera el umbral,
-la alerta pasa a **Fired**, llama al Action Group y este a la Function. En el
-portal: **Monitor → Alertas** → verás `budget-<FOUNDRY_ACCOUNT>` en `Fired`.
+Azure Monitor evaluates the metric every minute. When `TotalTokens` exceeds the
+threshold, the alert goes to **Fired**, calls the Action Group, and it calls the
+Function. In the portal: **Monitor → Alerts** → you'll see
+`budget-<FOUNDRY_ACCOUNT>` in `Fired`.
 
-### 2.4 Comprobar que el agente se bloqueó SOLO
+### 2.4 Verify the agent blocked ITSELF
 
 ```powershell
 Invoke-RestMethod -Uri "$FoundryEp/agents/$AgentId?api-version=v1" `
@@ -135,11 +137,11 @@ Invoke-RestMethod -Uri "$FoundryEp/agents/$AgentId?api-version=v1" `
 # → state = disabled
 ```
 
-**Prueba visual definitiva:** vuelve al playground e intenta usar el agente → el
-servicio ya **no lo sirve**. No es un flag: es el estado nativo *enforced* por
-Foundry.
+**Definitive visual proof:** go back to the playground and try to use the agent →
+the service no longer serves it. It is not a flag: it is the native state
+*enforced* by Foundry.
 
-Traza de que la Function se ejecutó (App Insights):
+Trace that the Function ran (App Insights):
 
 ```powershell
 az monitor app-insights query --app $FunctionApp --resource-group $Rg `
@@ -147,14 +149,14 @@ az monitor app-insights query --app $FunctionApp --resource-group $Rg `
   -o table
 ```
 
-> **Mensaje:** nadie tocó nada tras enviar el prompt. El agente se bloqueó solo
-> porque su consumo disparó la alerta. En producción ese mismo mecanismo se ata al
-> **presupuesto de coste** real.
+> **Message:** nobody touched anything after sending the prompt. The agent blocked
+> itself because its usage fired the alert. In production, that same mechanism is
+> tied to the agent's real **cost budget**.
 
-### 2.5 Desbloquear (revertir tras la demo)
+### 2.5 Unblock (revert after the demo)
 
-El bloqueo **no se deshace solo** al resolverse la alerta (es intencionado — el
-admin decide cuándo reactivar):
+The block **does not undo itself** when the alert resolves (by design — the admin
+decides when to re-enable):
 
 ```powershell
 $body = "{`"agentId`":`"$AgentId`",`"mechanism`":`"foundry`",`"action`":`"unblock`"}"
@@ -165,98 +167,96 @@ Invoke-RestMethod -Uri "$FoundryEp/agents/$AgentId?api-version=v1" `
 # → state = enabled
 ```
 
-> **Presupuesto vs. alerta métrica:** el presupuesto de Cost Management factura con
-> horas de retraso, así que no sirve para una demo en vivo. Por eso el trigger usa
-> la **alerta métrica** sobre `TotalTokens` (salta en 1–5 min). La lógica de bloqueo
-> es idéntica.
+> **Budget vs. metric alert:** a Cost Management budget bills with hours of delay,
+> so it is not suitable for a live demo. That is why the trigger uses the **metric
+> alert** on `TotalTokens` (fires in 1–5 min). The blocking logic is identical.
 
 ---
 
-## 3. Bloqueo nativo directo (mecanismo A, sin esperar la alerta)
+## 3. Direct native block (mechanism A, without waiting for the alert)
 
-Mismo mecanismo que el escenario estrella, pero invocando la Function a mano — útil
-para enseñarlo al instante.
+Same mechanism as the star scenario, but invoking the Function by hand — handy to
+show it instantly.
 
 ```powershell
-# BLOQUEAR
+# BLOCK
 $body = "{`"agentId`":`"$AgentId`",`"mechanism`":`"foundry`",`"action`":`"block`"}"
 (Invoke-RestMethod -Uri $Url -Method Post -ContentType "application/json" -Body $body).results
 # → success=true, detail: "Native state action :disable ... -> state=disabled (was enabled)"
 
-# DESBLOQUEAR
+# UNBLOCK
 $body = "{`"agentId`":`"$AgentId`",`"mechanism`":`"foundry`",`"action`":`"unblock`"}"
 (Invoke-RestMethod -Uri $Url -Method Post -ContentType "application/json" -Body $body).results
-# → state vuelve a enabled
+# → state back to enabled
 ```
 
-Lo ejecuta la **identidad administrada de la Function, sin Global Admin**, y lo
-*enforcea* el propio servicio. Es el bloqueo recomendado para agentes de Foundry.
+The Function's **managed identity runs it, without Global Admin**, and the service
+itself *enforces* it. This is the recommended block for Foundry agents.
 
 ---
 
-## 4. (Secundario) Mecanismo C — Etiqueta ARM
+## 4. (Secondary) Mechanism C — ARM tag
 
-Bloqueo **contundente** a nivel de cuenta: pone `MS-AOAI-Feature-Assistants=Disabled`
-sobre la cuenta Foundry, lo que desactiva **todos** los assistants clásicos de esa
-cuenta. Solo para comparar.
+A **blunt** account-level block: it sets `MS-AOAI-Feature-Assistants=Disabled` on the
+Foundry account, which disables **all** classic assistants on that account. For
+comparison only.
 
 ```powershell
-# Estado ANTES (etiqueta ausente o Enabled)
+# State BEFORE (tag absent or Enabled)
 az tag list --resource-id $Rid --query "properties.tags" -o json
 
-# BLOQUEAR (solo mecanismo tag)
+# BLOCK (tag mechanism only)
 $body = "{`"agentId`":`"$AgentId`",`"mechanism`":`"tag`",`"action`":`"block`"}"
 (Invoke-RestMethod -Uri $Url -Method Post -ContentType "application/json" -Body $body).results
 
 az tag list --resource-id $Rid --query "properties.tags.\"MS-AOAI-Feature-Assistants\"" -o tsv
 # → Disabled
 
-# DESBLOQUEAR
+# UNBLOCK
 $body = "{`"agentId`":`"$AgentId`",`"mechanism`":`"tag`",`"action`":`"unblock`"}"
 (Invoke-RestMethod -Uri $Url -Method Post -ContentType "application/json" -Body $body).results
-# → etiqueta vuelve a Enabled
+# → tag back to Enabled
 ```
 
 ---
 
-## 5. (Secundario) Mecanismo B — Identidad de Entra
+## 5. (Secondary) Mechanism B — Entra identity
 
-Deshabilita el `servicePrincipal` del agente (`accountEnabled=false`), cortando su
-acceso a nivel de identidad.
+Disables the agent's `servicePrincipal` (`accountEnabled=false`), cutting its access
+at the identity level.
 
-> ⚠️ Para **identidades de agente de Foundry** (tipo `agentIdentity`, preview), esta
-> operación **requiere Global Admin**: la identidad administrada recibe `403` aunque
-> tenga `Application.ReadWrite.All`. Para **agentes clásicos** respaldados por un
-> service principal normal, la identidad administrada con `Application.ReadWrite.All`
-> es suficiente.
+> ⚠️ For **Foundry agent identities** (type `agentIdentity`, preview), this
+> operation **requires Global Admin**: the managed identity gets `403` even with
+> `Application.ReadWrite.All`. For **classic agents** backed by a regular service
+> principal, the managed identity with `Application.ReadWrite.All` is enough.
 
 ```powershell
 $SpUrl = "https://graph.microsoft.com/v1.0/servicePrincipals/$AgentId?`$select=displayName,accountEnabled"
 $gtok  = az account get-access-token --scope "https://graph.microsoft.com/.default" --query accessToken -o tsv
 
-# Estado ANTES
+# State BEFORE
 Invoke-RestMethod -Uri $SpUrl -Headers @{ Authorization = "Bearer $gtok" }
 
-# BLOQUEAR (solo mecanismo graph)
+# BLOCK (graph mechanism only)
 $body = "{`"agentId`":`"$AgentId`",`"mechanism`":`"graph`",`"action`":`"block`"}"
 (Invoke-RestMethod -Uri $Url -Method Post -ContentType "application/json" -Body $body).results
 
-# DESBLOQUEAR
+# UNBLOCK
 $body = "{`"agentId`":`"$AgentId`",`"mechanism`":`"graph`",`"action`":`"unblock`"}"
 (Invoke-RestMethod -Uri $Url -Method Post -ContentType "application/json" -Body $body).results
 ```
 
 ---
 
-## 6. (Secundario) Manejo de errores
+## 6. (Secondary) Error handling
 
 ```powershell
-# Sin agente → 422
+# No agent → 422
 try {
   Invoke-RestMethod -Uri $Url -Method Post -ContentType "application/json" -Body '{}'
 } catch { $_.Exception.Response.StatusCode.value__ }   # → 422
 
-# Mecanismo inválido → 400
+# Invalid mechanism → 400
 $body = "{`"agentId`":`"$AgentId`",`"mechanism`":`"nope`",`"action`":`"block`"}"
 try {
   Invoke-RestMethod -Uri $Url -Method Post -ContentType "application/json" -Body $body
@@ -265,21 +265,21 @@ try {
 
 ---
 
-## Resumen
+## Summary
 
-| Escenario | Mecanismo | Qué demuestra |
-|-----------|-----------|---------------|
-| ⭐ Estrella (2) | A – estado nativo | Bloqueo **automático** por saturación de tokens, sin tocar nada |
-| Directo (3) | A – estado nativo | El mismo bloqueo, invocado a mano |
-| Etiqueta (4) | C – ARM tag | Bloqueo contundente a nivel de cuenta (comparación) |
-| Identidad (5) | B – Entra | Corte a nivel de identidad (requiere GA para agentes Foundry) |
-| Errores (6) | — | Validación de entradas (`422`/`400`) |
+| Scenario | Mechanism | What it shows |
+|----------|-----------|---------------|
+| ⭐ Star (2) | A – native state | **Automatic** block from token saturation, touching nothing |
+| Direct (3) | A – native state | The same block, invoked by hand |
+| Tag (4) | C – ARM tag | Blunt account-level block (comparison) |
+| Identity (5) | B – Entra | Identity-level cut (requires GA for Foundry agents) |
+| Errors (6) | — | Input validation (`422`/`400`) |
 
 ---
 
-## Limpieza final
+## Final cleanup
 
-Deja el agente **enabled** tras la demo:
+Leave the agent **enabled** after the demo:
 
 ```powershell
 $body = "{`"agentId`":`"$AgentId`",`"mechanism`":`"foundry`",`"action`":`"unblock`"}"
@@ -291,5 +291,5 @@ Invoke-RestMethod -Uri "$FoundryEp/agents/$AgentId?api-version=v1" `
 # → state = enabled
 ```
 
-Si probaste el Mecanismo C, revisa que la etiqueta quede en `Enabled`; si probaste
-el B, que `accountEnabled=true`.
+If you tried Mechanism C, check the tag is back to `Enabled`; if you tried B, that
+`accountEnabled=true`.
